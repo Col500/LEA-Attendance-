@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Lock, LogIn, X, CheckCircle2, AlertCircle, Loader2, ShieldCheck, School } from 'lucide-react';
+import { Lock, LogIn, X, CheckCircle2, AlertCircle, Loader2, ShieldCheck, School, Eye, EyeOff } from 'lucide-react';
 import { getSupabaseClient, getSupabaseConfigStatus } from '../lib/supabaseClient';
 import { resolveLoginIdentifier } from '../lib/authRoles';
 
@@ -24,6 +24,7 @@ export const StaffSignInModal: React.FC<StaffSignInModalProps> = ({
   const supabaseStatus = getSupabaseConfigStatus();
   const [identifier, setIdentifier] = useState('');
   const [authPassword, setAuthPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [isBusy, setIsBusy] = useState(false);
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
 
@@ -134,9 +135,11 @@ export const StaffSignInModal: React.FC<StaffSignInModalProps> = ({
               <p className="leading-relaxed">
                 Sign in with your assigned role username or email.
               </p>
-              <p className="text-[11px] text-emerald-800">
-                Role logins: <strong>admin</strong> (Read & Write), <strong>headteacher</strong> (Read-Only), <strong>inspector</strong> (Read-Only).
-              </p>
+              <div className="text-[11px] text-emerald-800 space-y-0.5 leading-snug">
+                <div>Role logins: <strong>admin</strong> (Read &amp; Write)</div>
+                <div><strong>Headteacher</strong> (Read-Only)</div>
+                <div><strong>inspector</strong> (Read-Only)</div>
+              </div>
             </div>
           </div>
 
@@ -166,15 +169,30 @@ export const StaffSignInModal: React.FC<StaffSignInModalProps> = ({
                 <label className="block text-xs font-semibold text-slate-700 mb-1">
                   Password
                 </label>
-                <input
-                  type="password"
-                  autoComplete="current-password"
-                  value={authPassword}
-                  onChange={(e) => setAuthPassword(e.target.value)}
-                  placeholder="Enter your assigned password"
-                  required
-                  className="w-full px-3 py-2.5 rounded-lg border border-slate-300 bg-white text-slate-900 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-600"
-                />
+                <div className="relative">
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    autoComplete="current-password"
+                    value={authPassword}
+                    onChange={(e) => setAuthPassword(e.target.value)}
+                    placeholder="Enter your assigned password"
+                    required
+                    className="w-full pl-3 pr-10 py-2.5 rounded-lg border border-slate-300 bg-white text-slate-900 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-600"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((prev) => !prev)}
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                    title={showPassword ? 'Hide password' : 'Show password'}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 rounded-md text-slate-500 hover:text-slate-800 hover:bg-slate-100 cursor-pointer"
+                  >
+                    {showPassword ? (
+                      <EyeOff className="w-4 h-4" />
+                    ) : (
+                      <Eye className="w-4 h-4" />
+                    )}
+                  </button>
+                </div>
               </div>
 
               {message && (

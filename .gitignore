@@ -10,3 +10,5 @@ credentials/
 *-key.json
 *serviceaccount*.json
 *gserviceaccount*.json
+.vercel
+

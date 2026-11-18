@@ -17,7 +17,9 @@ import {
   Phone,
   Mail,
   User,
-  Info
+  Info,
+  Eye,
+  EyeOff
 } from 'lucide-react';
 import { SchoolInfo, StaffProfile } from '../types/attendance';
 import { initialSchoolInfo } from '../data/mockData';
@@ -68,6 +70,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
   const supabaseStatus = getSupabaseConfigStatus();
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
+  const [showAuthPassword, setShowAuthPassword] = useState(false);
   const [isAuthBusy, setIsAuthBusy] = useState(false);
   const [authMessage, setAuthMessage] = useState<{ ok: boolean; text: string } | null>(null);
   const [isSeedingRoster, setIsSeedingRoster] = useState(false);
@@ -332,15 +335,30 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                 required
                 className="px-3 py-2 rounded-md border border-slate-300 bg-white text-slate-900 text-xs"
               />
-              <input
-                type="password"
-                autoComplete="current-password"
-                value={authPassword}
-                onChange={(e) => setAuthPassword(e.target.value)}
-                placeholder="Password"
-                required
-                className="px-3 py-2 rounded-md border border-slate-300 bg-white text-slate-900 text-xs"
-              />
+              <div className="relative">
+                <input
+                  type={showAuthPassword ? 'text' : 'password'}
+                  autoComplete="current-password"
+                  value={authPassword}
+                  onChange={(e) => setAuthPassword(e.target.value)}
+                  placeholder="Password"
+                  required
+                  className="w-full pl-3 pr-9 py-2 rounded-md border border-slate-300 bg-white text-slate-900 text-xs"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowAuthPassword((prev) => !prev)}
+                  aria-label={showAuthPassword ? 'Hide password' : 'Show password'}
+                  title={showAuthPassword ? 'Hide password' : 'Show password'}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded text-slate-500 hover:text-slate-800 hover:bg-slate-100 cursor-pointer"
+                >
+                  {showAuthPassword ? (
+                    <EyeOff className="w-3.5 h-3.5" />
+                  ) : (
+                    <Eye className="w-3.5 h-3.5" />
+                  )}
+                </button>
+              </div>
             </div>
 
             {authMessage && (
