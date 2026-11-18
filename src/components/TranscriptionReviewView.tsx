@@ -2,8 +2,6 @@ import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   CheckCircle2,
   AlertTriangle,
-  RotateCw,
-  RotateCcw,
   Maximize2,
   X,
   Search,
@@ -28,7 +26,8 @@ import {
   Layers,
   Loader2,
   WifiOff,
-  ExternalLink
+  ExternalLink,
+  Trash2
 } from 'lucide-react';
 import {
   AttendanceCell,
@@ -70,10 +69,9 @@ interface TranscriptionReviewViewProps {
   school?: SchoolInfo;
   isSupabaseLive?: boolean;
   isStagedVerifying?: boolean;
-  onRotateCw: () => void;
-  onRotateCcw: () => void;
   onReAnalyze: () => void;
   onCropOrRetake?: () => void;
+  onRetakeOrDelete?: () => void;
   onRunStagedVerification?: () => Promise<void>;
   onSaveDraftOnly?: (draft: AttendanceSessionDraft) => void;
   onCheckDuplicateSessions?: (params: {
@@ -144,10 +142,9 @@ export const TranscriptionReviewView: React.FC<TranscriptionReviewViewProps> = (
   school,
   isSupabaseLive = false,
   isStagedVerifying = false,
-  onRotateCw,
-  onRotateCcw,
   onReAnalyze,
   onCropOrRetake,
+  onRetakeOrDelete,
   onRunStagedVerification,
   onSaveDraftOnly,
   onCheckDuplicateSessions,
@@ -598,7 +595,7 @@ export const TranscriptionReviewView: React.FC<TranscriptionReviewViewProps> = (
   };
 
   return (
-    <div className="space-y-4 sm:space-y-5 max-w-7xl mx-auto pb-28 md:pb-6">
+    <div className="w-full min-w-0 space-y-4 sm:space-y-5 max-w-7xl mx-auto pb-28 md:pb-6">
       {/* Offline Banner (Only shown when browser loses connectivity) */}
       {!isOnline && (
         <div className="p-3.5 bg-amber-50 border border-amber-300 rounded-xl text-amber-950 text-xs flex items-start gap-2.5">
@@ -613,15 +610,27 @@ export const TranscriptionReviewView: React.FC<TranscriptionReviewViewProps> = (
       )}
       {/* Top Header & Breadcrumb */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 pb-3 border-b border-slate-200">
-        <div>
-          <button
-            type="button"
-            onClick={onCancel}
-            className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-600 hover:text-slate-900 mb-1.5 cursor-pointer"
-          >
-            <ArrowLeft className="w-3.5 h-3.5" />
-            <span>Back to Photograph & Setup</span>
-          </button>
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-1.5">
+            <button
+              type="button"
+              onClick={onCancel}
+              className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-600 hover:text-slate-900 cursor-pointer"
+            >
+              <ArrowLeft className="w-3.5 h-3.5" />
+              <span>Back to Setup</span>
+            </button>
+            {onRetakeOrDelete && (
+              <button
+                type="button"
+                onClick={onRetakeOrDelete}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-800 text-xs font-semibold cursor-pointer"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Delete &amp; Retake</span>
+              </button>
+            )}
+          </div>
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="text-lg sm:text-2xl font-bold text-slate-900 tracking-tight">
               Human Review: Extracted Attendance
@@ -935,26 +944,21 @@ export const TranscriptionReviewView: React.FC<TranscriptionReviewViewProps> = (
               <span>Source Register Photo</span>
             </div>
             <div className="flex items-center gap-1">
-              <button
-                type="button"
-                onClick={onRotateCcw}
-                className="p-1.5 rounded hover:bg-slate-200 text-slate-600"
-                title="Rotate counterclockwise"
-              >
-                <RotateCcw className="w-3.5 h-3.5" />
-              </button>
-              <button
-                type="button"
-                onClick={onRotateCw}
-                className="p-1.5 rounded hover:bg-slate-200 text-slate-600"
-                title="Rotate clockwise"
-              >
-                <RotateCw className="w-3.5 h-3.5" />
-              </button>
+              {onRetakeOrDelete && (
+                <button
+                  type="button"
+                  onClick={onRetakeOrDelete}
+                  className="inline-flex items-center gap-1 px-2 py-1 rounded hover:bg-rose-100 text-rose-700 text-[11px] font-semibold cursor-pointer"
+                  title="Delete scan and retake photo"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Delete</span>
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => setIsFullscreenImage(true)}
-                className="p-1.5 rounded hover:bg-slate-200 text-slate-600"
+                className="p-1.5 rounded hover:bg-slate-200 text-slate-600 cursor-pointer"
                 title="Fullscreen view"
               >
                 <Maximize2 className="w-3.5 h-3.5" />
@@ -962,13 +966,15 @@ export const TranscriptionReviewView: React.FC<TranscriptionReviewViewProps> = (
             </div>
           </div>
 
-          <div className="p-3 bg-slate-900/5 flex items-center justify-center min-h-[260px] max-h-[500px] overflow-auto">
-            <img
-              src={imageUri}
-              alt="Physical Attendance Register"
-              className="max-h-[460px] w-auto max-w-full object-contain transition-transform rounded border border-slate-200 bg-white shadow-xs"
-              style={{ transform: `rotate(${rotation}deg)` }}
-            />
+          <div className="p-3 bg-slate-950 flex items-center justify-center">
+            <div className="w-full max-w-[280px] aspect-9/16 max-h-[65vh] mx-auto flex items-center justify-center overflow-hidden rounded border border-slate-800 bg-slate-900">
+              <img
+                src={imageUri}
+                alt="Physical Attendance Register"
+                className="w-full h-full object-contain"
+                style={{ transform: `rotate(${rotation}deg)` }}
+              />
+            </div>
           </div>
 
           <div className="p-3 bg-slate-50 border-t border-slate-200 space-y-2 text-[11px]">
@@ -1981,15 +1987,8 @@ export const TranscriptionReviewView: React.FC<TranscriptionReviewViewProps> = (
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={onRotateCw}
-                className="px-2.5 py-1 rounded bg-slate-800 text-xs text-white hover:bg-slate-700"
-              >
-                Rotate +90°
-              </button>
-              <button
-                type="button"
                 onClick={() => setIsFullscreenImage(false)}
-                className="p-1 rounded text-slate-400 hover:text-white"
+                className="p-1 rounded text-slate-400 hover:text-white cursor-pointer"
               >
                 <X className="w-6 h-6" />
               </button>

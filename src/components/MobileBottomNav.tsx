@@ -21,7 +21,7 @@ export const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
   const canViewStudents = !userRole || canAccessNavTab(userRole, 'students');
   return (
     <nav
-      className="md:hidden fixed bottom-0 inset-x-0 z-30 bg-white border-t border-slate-200 px-2 py-1 shadow-lg print:hidden"
+      className="md:hidden fixed bottom-0 inset-x-0 z-30 bg-white border-t border-slate-200 px-2 py-1 pb-[max(0.25rem,env(safe-area-inset-bottom))] shadow-lg print:hidden"
       aria-label="Mobile Navigation"
     >
       <div className="flex items-center justify-around max-w-lg mx-auto">
@@ -44,10 +44,7 @@ export const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
               activeTab === 'scan' ? 'text-emerald-700 font-semibold' : 'text-slate-600 hover:text-slate-900'
             }`}
           >
-            <div className="relative">
-              <ScanLine className="w-5 h-5 mb-0.5" />
-              <span className="absolute -top-1 -right-2 w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-            </div>
+            <ScanLine className="w-5 h-5 mb-0.5" />
             <span className="text-[10px]">Scan</span>
           </button>
         )}

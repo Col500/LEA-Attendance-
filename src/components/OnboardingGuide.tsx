@@ -55,27 +55,27 @@ export const OnboardingGuide: React.FC<OnboardingGuideProps> = ({
 
   if (guideState.collapsed) {
     return (
-      <div className="mb-5 bg-white rounded-lg border border-emerald-200 px-4 py-2.5 shadow-xs flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-3 min-w-0">
+      <div className="w-full min-w-0 mb-4 bg-white rounded-xl border border-emerald-200 px-3 sm:px-4 py-2.5 shadow-xs flex flex-wrap items-center justify-between gap-2.5">
+        <div className="flex items-center gap-2.5 min-w-0 flex-1">
           <div className="w-7 h-7 rounded-md bg-emerald-100 text-emerald-800 flex items-center justify-center shrink-0">
             <Compass className="w-4 h-4" />
           </div>
-          <div className="min-w-0 text-xs">
+          <div className="min-w-0 text-xs truncate">
             <span className="font-bold text-slate-900">
-              Setup Guide · Step {currentStep.stepNumber} of {evaluation.totalSteps}:
+              Guide {currentStep.stepNumber}/{evaluation.totalSteps}:
             </span>{' '}
             <span className="text-slate-600">{currentStep.shortTitle}</span>
-            <span className="text-emerald-700 font-semibold ml-2 tabular-nums">
-              ({evaluation.completedCount}/{evaluation.totalSteps} done)
+            <span className="text-emerald-700 font-semibold ml-1.5 tabular-nums">
+              ({evaluation.completedCount}/{evaluation.totalSteps})
             </span>
           </div>
         </div>
 
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-1.5 shrink-0">
           <button
             type="button"
             onClick={() => onExecuteStep(currentStep, currentIdx)}
-            className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold cursor-pointer"
+            className="inline-flex items-center gap-1 px-2.5 sm:px-3 py-1.5 rounded-md bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-semibold cursor-pointer"
           >
             <span>{currentStep.actionLabel}</span>
             <ArrowRight className="w-3.5 h-3.5" />
@@ -106,16 +106,16 @@ export const OnboardingGuide: React.FC<OnboardingGuideProps> = ({
   return (
     <section
       aria-label="Interactive Setup Tutorial"
-      className="mb-6 bg-white rounded-xl border border-emerald-200/90 shadow-xs overflow-hidden"
+      className="w-full min-w-0 mb-5 bg-white rounded-xl border border-emerald-200/90 shadow-xs overflow-hidden"
     >
       {/* Top progress strip */}
-      <div className="px-4 sm:px-5 py-3 bg-emerald-50/70 border-b border-emerald-100 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2.5">
+      <div className="px-3 sm:px-5 py-2.5 sm:py-3 bg-emerald-50/70 border-b border-emerald-100 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2.5 min-w-0">
           <div className="w-7 h-7 rounded-md bg-emerald-700 text-white flex items-center justify-center shrink-0">
             <Sparkles className="w-4 h-4" />
           </div>
-          <div>
-            <div className="text-xs font-bold text-slate-900">
+          <div className="min-w-0">
+            <div className="text-xs font-bold text-slate-900 truncate">
               {evaluation.allCompleted
                 ? 'Setup Walkthrough Complete'
                 : 'Guided App Walkthrough'}
@@ -126,7 +126,7 @@ export const OnboardingGuide: React.FC<OnboardingGuideProps> = ({
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5 shrink-0">
           {evaluation.allCompleted && (
             <button
               type="button"
@@ -134,13 +134,13 @@ export const OnboardingGuide: React.FC<OnboardingGuideProps> = ({
               className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md border border-slate-300 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 cursor-pointer"
             >
               <RotateCcw className="w-3 h-3" />
-              <span>Restart Tour</span>
+              <span>Restart</span>
             </button>
           )}
           <button
             type="button"
             onClick={onToggleCollapse}
-            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md border border-slate-200 bg-white hover:bg-slate-50 text-xs font-medium text-slate-600 cursor-pointer"
+            className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-slate-200 bg-white hover:bg-slate-50 text-xs font-medium text-slate-600 cursor-pointer"
             title="Minimize guide"
           >
             <ChevronUp className="w-3.5 h-3.5" />
@@ -159,7 +159,7 @@ export const OnboardingGuide: React.FC<OnboardingGuideProps> = ({
       </div>
 
       {/* Interactive 4-step selector bar */}
-      <div className="px-4 sm:px-5 pt-3.5 pb-2 grid grid-cols-2 lg:grid-cols-4 gap-2">
+      <div className="px-3 sm:px-5 pt-3 pb-2 grid grid-cols-2 lg:grid-cols-4 gap-1.5 sm:gap-2">
         {evaluation.steps.map((item, idx) => {
           const isCurrent = idx === currentIdx;
           return (

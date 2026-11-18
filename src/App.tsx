@@ -668,7 +668,7 @@ export default function App() {
     !supabaseConfigured || canAccessNavTab(staffProfile?.role, activeTab);
 
   return (
-    <div className="min-h-screen bg-slate-100/90 text-slate-800 flex flex-col font-sans antialiased selection:bg-emerald-200 selection:text-emerald-900">
+    <div className="min-h-screen w-full max-w-full overflow-x-hidden bg-slate-100/90 text-slate-800 flex flex-col font-sans antialiased selection:bg-emerald-200 selection:text-emerald-900">
       {/* Persistence / Sample Mode Status Banner */}
       <SampleDataBanner
         persistenceMode={persistenceMode}
@@ -718,7 +718,7 @@ export default function App() {
         onSignOut={handleSignOut}
       />
 
-      <div className="flex-1 flex w-full">
+      <div className="flex-1 flex w-full min-w-0">
         {/* Navigation Sidebar (Desktop + Mobile Drawer) */}
         <Sidebar
           activeTab={activeTab}
@@ -731,7 +731,7 @@ export default function App() {
         />
 
         {/* Main Content Area */}
-        <main className="flex-1 min-w-0 p-4 sm:p-6 lg:p-8 pb-20 md:pb-8">
+        <main className="flex-1 w-full min-w-0 px-3 py-3 sm:p-6 lg:p-8 pb-24 md:pb-8">
           {canWrite && (
             <OnboardingGuide
               guideState={tutorialState}

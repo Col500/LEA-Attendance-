@@ -244,17 +244,17 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
       : 'School Administrator';
 
   return (
-    <div className="space-y-6 max-w-7xl mx-auto">
+    <div className="w-full min-w-0 space-y-5 sm:space-y-6 max-w-7xl mx-auto">
       {/* Top Banner / Call to Action */}
-      <div className="bg-gradient-to-r from-slate-900 to-slate-800 rounded-xl p-5 sm:p-7 text-white shadow-sm border border-slate-700/50">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-5">
-          <div className="space-y-1.5 max-w-2xl">
+      <div className="bg-gradient-to-r from-slate-900 to-slate-800 rounded-xl p-4 sm:p-7 text-white shadow-sm border border-slate-700/50">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 sm:gap-5">
+          <div className="space-y-1.5 max-w-2xl min-w-0">
             <div className="text-xs font-semibold tracking-wider text-emerald-400 uppercase">
               Physical Register Digitization
             </div>
             <h2 className="text-base sm:text-lg font-medium text-slate-200 leading-snug">
               <span>{greetingPrefix} </span>
-              <span className="block sm:inline text-2xl sm:text-3xl font-extrabold tracking-tight text-white">
+              <span className="font-semibold text-orange-400">
                 {greetingSubject}
               </span>
             </h2>

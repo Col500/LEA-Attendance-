@@ -16,12 +16,10 @@ import {
   Camera,
   Loader2,
   AlertTriangle,
-  RotateCcw,
-  RotateCw,
   Maximize2
 } from 'lucide-react';
 import { ClassItem, Student } from '../types/attendance';
-import { normalizeQuarterRotation, preprocessRegisterImage } from '../services/imagePreprocessing';
+import { preprocessRegisterImage } from '../services/imagePreprocessing';
 
 interface ExtractedRosterDraftRow {
   localId: string;
@@ -86,8 +84,6 @@ export const StudentsPage: React.FC<StudentsPageProps> = ({
   const [bulkNewClassName, setBulkNewClassName] = useState('');
   const [bulkNewClassTeacher, setBulkNewClassTeacher] = useState('');
   const [bulkPreviewUrl, setBulkPreviewUrl] = useState<string | null>(null);
-  const [bulkRawImageUrl, setBulkRawImageUrl] = useState<string | null>(null);
-  const [bulkRotation, setBulkRotation] = useState<number>(0);
   const [bulkImageMeta, setBulkImageMeta] = useState<{
     fileName: string;
     width: number;
@@ -381,8 +377,6 @@ export const StudentsPage: React.FC<StudentsPageProps> = ({
     setBulkNewClassName('');
     setBulkNewClassTeacher('');
     setBulkPreviewUrl(null);
-    setBulkRawImageUrl(null);
-    setBulkRotation(0);
     setBulkImageMeta(null);
     setBulkImageSource(null);
     setBulkHasExtracted(false);
@@ -485,9 +479,7 @@ export const StudentsPage: React.FC<StudentsPageProps> = ({
         maxDimension: 1800,
         preferredMimeType: file.type
       });
-      setBulkRawImageUrl(pre.dataUrl);
       setBulkPreviewUrl(pre.dataUrl);
-      setBulkRotation(0);
       setBulkImageSource(options.source);
       setBulkHasExtracted(false);
       setBulkRows([]);
@@ -508,32 +500,6 @@ export const StudentsPage: React.FC<StudentsPageProps> = ({
     }
   };
 
-  const handleRotateBulkPreview = async (deltaDeg: number) => {
-    if (!bulkRawImageUrl) return;
-    const nextRot = normalizeQuarterRotation(bulkRotation + deltaDeg);
-    try {
-      const pre = await preprocessRegisterImage({
-        source: bulkRawImageUrl,
-        rotation: nextRot,
-        maxDimension: 1800
-      });
-      setBulkRotation(nextRot);
-      setBulkPreviewUrl(pre.dataUrl);
-      setBulkImageMeta((prev) =>
-        prev
-          ? {
-              ...prev,
-              width: pre.outputWidth,
-              height: pre.outputHeight,
-              sizeLabel: `${(pre.estimatedBytes / (1024 * 1024)).toFixed(2)} MB`
-            }
-          : null
-      );
-    } catch (err: any) {
-      setBulkExtractError(err?.message || 'Unable to rotate preview image.');
-    }
-  };
-
   const handleClearBulkPreview = () => {
     if (bulkAbortRef.current) {
       bulkAbortRef.current.abort();
@@ -541,8 +507,6 @@ export const StudentsPage: React.FC<StudentsPageProps> = ({
     }
     setIsExtractingRoster(false);
     setBulkPreviewUrl(null);
-    setBulkRawImageUrl(null);
-    setBulkRotation(0);
     setBulkImageMeta(null);
     setBulkImageSource(null);
     setBulkHasExtracted(false);
@@ -550,6 +514,11 @@ export const StudentsPage: React.FC<StudentsPageProps> = ({
     setBulkDetectedClass(null);
     setBulkExtractError(null);
     setBulkIsFullscreenPreview(false);
+  };
+
+  const handleRetakeBulkPhoto = () => {
+    handleClearBulkPreview();
+    bulkCameraInputRef.current?.click();
   };
 
   const handleCancelRosterExtraction = () => {
@@ -1734,15 +1703,15 @@ export const StudentsPage: React.FC<StudentsPageProps> = ({
                   </div>
                 </div>
               ) : !bulkHasExtracted && !isExtractingRoster ? (
-                /* Full Image Preview Before Uploading */
+                /* 9:16 Portrait Image Preview Before Uploading */
                 <div className="space-y-3 p-3 rounded-lg border border-slate-200 bg-slate-50">
-                  <div className="relative rounded-lg overflow-hidden border border-slate-300 bg-slate-950 flex items-center justify-center min-h-[220px]">
+                  <div className="relative w-full max-w-[260px] mx-auto aspect-9/16 max-h-[56vh] rounded-lg overflow-hidden border border-slate-300 bg-slate-950 flex items-center justify-center">
                     <img
                       src={bulkPreviewUrl}
                       alt="Preview of student register before upload"
-                      className="max-h-72 w-auto h-auto max-w-full object-contain"
+                      className="w-full h-full object-contain"
                     />
-                    <div className="absolute top-2 right-2 flex items-center gap-1 bg-slate-900/80 p-1 rounded-md border border-slate-800">
+                    <div className="absolute top-2 right-2 flex items-center gap-1 bg-slate-900/85 p-1 rounded-md border border-slate-700">
                       <button
                         type="button"
                         onClick={() => setBulkIsFullscreenPreview(true)}
@@ -1755,55 +1724,54 @@ export const StudentsPage: React.FC<StudentsPageProps> = ({
                         type="button"
                         onClick={handleClearBulkPreview}
                         className="p-1.5 rounded hover:bg-rose-900/80 text-rose-300 hover:text-white cursor-pointer"
-                        title="Remove image"
+                        title="Delete photo"
                       >
-                        <X className="w-3.5 h-3.5" />
+                        <Trash2 className="w-3.5 h-3.5" />
                       </button>
                     </div>
                   </div>
 
-                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <button
-                        type="button"
-                        onClick={() => void handleRotateBulkPreview(-90)}
-                        className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-white hover:bg-slate-100 border border-slate-300 rounded text-slate-700 font-semibold cursor-pointer"
-                      >
-                        <RotateCcw className="w-3.5 h-3.5" />
-                        <span>-90°</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void handleRotateBulkPreview(90)}
-                        className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-white hover:bg-slate-100 border border-slate-300 rounded text-slate-700 font-semibold cursor-pointer"
-                      >
-                        <RotateCw className="w-3.5 h-3.5" />
-                        <span>+90°</span>
-                      </button>
-                      {bulkImageMeta && (
-                        <span className="text-[11px] text-slate-500 ml-1 truncate max-w-[220px]">
-                          {bulkImageMeta.fileName} · {bulkImageMeta.width}×{bulkImageMeta.height}px ({bulkImageMeta.sizeLabel})
-                        </span>
-                      )}
+                  {bulkImageMeta && (
+                    <div className="text-[11px] text-slate-500 text-center truncate">
+                      {bulkImageMeta.fileName} · {bulkImageMeta.sizeLabel}
                     </div>
+                  )}
 
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
                     <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={handleRetakeBulkPhoto}
+                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md border border-emerald-300 bg-white hover:bg-emerald-50 text-emerald-800 font-semibold cursor-pointer"
+                      >
+                        <Camera className="w-3.5 h-3.5" />
+                        <span>Retake</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleClearBulkPreview}
+                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md border border-rose-200 bg-white hover:bg-rose-50 text-rose-700 font-semibold cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>Delete</span>
+                      </button>
                       <button
                         type="button"
                         onClick={() => bulkFileInputRef.current?.click()}
                         className="px-3 py-1.5 rounded-md border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 font-semibold cursor-pointer"
                       >
-                        Change Photo
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void runRosterExtraction(bulkPreviewUrl)}
-                        className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-md bg-emerald-700 hover:bg-emerald-800 text-white font-bold shadow-xs cursor-pointer"
-                      >
-                        <UploadCloud className="w-4 h-4" />
-                        <span>Upload &amp; Extract Roster</span>
+                        Gallery
                       </button>
                     </div>
+
+                    <button
+                      type="button"
+                      onClick={() => void runRosterExtraction(bulkPreviewUrl)}
+                      className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-md bg-emerald-700 hover:bg-emerald-800 text-white font-bold shadow-xs cursor-pointer"
+                    >
+                      <ScanLine className="w-4 h-4" />
+                      <span>Extract Roster</span>
+                    </button>
                   </div>
                 </div>
               ) : (
@@ -1818,7 +1786,7 @@ export const StudentsPage: React.FC<StudentsPageProps> = ({
                       <img
                         src={bulkPreviewUrl}
                         alt="Scanned student register"
-                        className="w-20 h-14 object-cover bg-white"
+                        className="w-12 h-20 object-cover bg-slate-900"
                       />
                     </button>
                     <div className="min-w-0">
@@ -1832,14 +1800,14 @@ export const StudentsPage: React.FC<StudentsPageProps> = ({
                       </div>
                     </div>
                   </div>
-                  <div className="flex items-center gap-2 shrink-0">
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
                     {isExtractingRoster ? (
                       <button
                         type="button"
                         onClick={handleCancelRosterExtraction}
                         className="px-3 py-1.5 rounded-md bg-rose-50 border border-rose-300 text-rose-800 font-semibold hover:bg-rose-100 cursor-pointer"
                       >
-                        Cancel Extraction
+                        Cancel
                       </button>
                     ) : (
                       <>
@@ -1852,10 +1820,19 @@ export const StudentsPage: React.FC<StudentsPageProps> = ({
                         </button>
                         <button
                           type="button"
-                          onClick={() => bulkFileInputRef.current?.click()}
-                          className="px-3 py-1.5 rounded-md border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 font-semibold cursor-pointer"
+                          onClick={handleRetakeBulkPhoto}
+                          className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md border border-emerald-300 bg-white hover:bg-emerald-50 text-emerald-800 font-semibold cursor-pointer"
                         >
-                          Change Photo
+                          <Camera className="w-3.5 h-3.5" />
+                          <span>Retake</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleClearBulkPreview}
+                          className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md border border-rose-200 bg-white hover:bg-rose-50 text-rose-700 font-semibold cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>Delete</span>
                         </button>
                       </>
                     )}

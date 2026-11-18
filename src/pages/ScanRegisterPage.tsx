@@ -5,10 +5,7 @@ import {
   FileCheck,
   AlertCircle,
   X,
-  Sparkles,
   CheckCircle2,
-  RotateCw,
-  RotateCcw,
   Loader2,
   Maximize2,
   RefreshCw,
@@ -17,13 +14,13 @@ import {
   SwitchCamera,
   CircleDot,
   CameraOff,
-  Video,
   Code2,
   Crop,
   AlertTriangle,
   FlaskConical,
   Trash2,
-  WifiOff
+  WifiOff,
+  ScanLine
 } from 'lucide-react';
 import {
   RegisterFormatMode,
@@ -129,9 +126,8 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
   const [workflowState, setWorkflowState] = useState<ScanWorkflowState>('empty');
 
   // Cloud Vision Engine (Google Cloud Vision OCR exclusively)
-  const [selectedModel, setSelectedModel] = useState<string>('google-cloud-vision');
+  const [selectedModel] = useState<string>('google-cloud-vision');
   const [actualModelUsed, setActualModelUsed] = useState<string>('Google Cloud Vision API');
-  const [cloudVisionConfigured, setCloudVisionConfigured] = useState<boolean>(true);
   const [billingAlert, setBillingAlert] = useState<{
     required: boolean;
     message: string;
@@ -166,7 +162,6 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
   const [geminiResult, setGeminiResult] = useState<GeminiExtractionResult | null>(null);
   const [validatedDraft, setValidatedDraft] = useState<AttendanceSessionDraft | null>(null);
   const [processingPhase, setProcessingPhase] = useState<string>('');
-  const [activePhaseIndex, setActivePhaseIndex] = useState<number>(1);
   const [confirmedSessionSummary, setConfirmedSessionSummary] = useState<AttendanceSession | null>(null);
   const [showDevTestPanel, setShowDevTestPanel] = useState(false);
   const [showBenchmarkPanel, setShowBenchmarkPanel] = useState(false);
@@ -206,23 +201,6 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
       setSelectedClass(activeClasses[0].name);
     }
   }, [activeClasses, selectedClass, highlightedTarget]);
-
-  // Check Cloud Vision connection status on mount
-  useEffect(() => {
-    let active = true;
-    fetch('/api/models')
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        if (!active || !data) return;
-        setCloudVisionConfigured(Boolean(data.cloudVisionConfigured));
-      })
-      .catch(() => {
-        // Keep Cloud Vision as active engine
-      });
-    return () => {
-      active = false;
-    };
-  }, []);
 
   // Clean up camera stream & pending analysis abort controller when component unmounts
   useEffect(() => {
@@ -558,24 +536,7 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
     }
   };
 
-  // Rotation controls: physically bake quarter-turn rotation so preview AND uploaded pixels always match
-  const handleRotateCw = () => {
-    const nextRot = normalizeQuarterRotation(rotation + 90);
-    setRotation(nextRot);
-    if (rawSourceImage) {
-      void applyPreprocessingTransform(rawSourceImage, nextRot, cropBox);
-    }
-  };
-
-  const handleRotateCcw = () => {
-    const nextRot = normalizeQuarterRotation(rotation - 90);
-    setRotation(nextRot);
-    if (rawSourceImage) {
-      void applyPreprocessingTransform(rawSourceImage, nextRot, cropBox);
-    }
-  };
-
-  const handleResetOrientationAndCrop = () => {
+  const handleResetCrop = () => {
     setRotation(0);
     setCropBox(null);
     if (rawSourceImage) {
@@ -590,7 +551,21 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
     }
   };
 
-  // Remove image
+  // Single unified camera trigger: uses native camera app on phones, webcam viewfinder on desktop
+  const handleTakePhotoAction = () => {
+    const isMobileTouch =
+      typeof window !== 'undefined' &&
+      (window.matchMedia?.('(pointer: coarse)')?.matches ||
+        (navigator.maxTouchPoints > 0 && window.innerWidth < 768));
+
+    if (isMobileTouch && cameraInputRef.current) {
+      cameraInputRef.current.click();
+    } else {
+      void startLiveCamera('environment');
+    }
+  };
+
+  // Remove image & clear current scan completely
   const handleRemoveImage = () => {
     if (analyzeAbortControllerRef.current) {
       analyzeAbortControllerRef.current.abort();
@@ -615,7 +590,13 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
     if (cameraInputRef.current) cameraInputRef.current.value = '';
   };
 
-  // Cancel active AI extraction cleanly without throwing an error
+  // Delete current picture/scan and immediately launch camera to retake another one
+  const handleRetakePhoto = () => {
+    handleRemoveImage();
+    handleTakePhotoAction();
+  };
+
+  // Cancel active extraction cleanly without throwing an error
   const handleCancelAnalysis = () => {
     if (analyzeAbortControllerRef.current) {
       analyzeAbortControllerRef.current.abort();
@@ -813,12 +794,10 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
     setErrorMessage(null);
     setBillingAlert(null);
 
-    setProcessingPhase('Scanning register with Google Cloud Vision OCR...');
-    setActivePhaseIndex(2);
+    setProcessingPhase('Scanning register photograph...');
 
     const timer2 = setTimeout(() => {
       setProcessingPhase('Verifying ticks and blanks on attendance grid...');
-      setActivePhaseIndex(3);
     }, 900);
 
     try {
@@ -1108,13 +1087,12 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
         school={school}
         isSupabaseLive={isSupabaseLive}
         isStagedVerifying={isStagedVerifying}
-        onRotateCw={handleRotateCw}
-        onRotateCcw={handleRotateCcw}
         onReAnalyze={() => void handleAnalyzeRegister()}
         onCropOrRetake={() => {
           setWorkflowState('ready-to-analyze');
           setIsCropModalOpen(true);
         }}
+        onRetakeOrDelete={handleRetakePhoto}
         onRunStagedVerification={handleManualStagedVerification}
         onSaveDraftOnly={(draftToSave) => saveStoredSessionDraft(draftToSave)}
         onCheckDuplicateSessions={handleCheckDuplicateSessions}
@@ -1240,35 +1218,35 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
     );
   }
 
-  // 3. MAIN INTAKE & UPLOAD INTERFACE
+  // 3. MAIN INTAKE & UPLOAD INTERFACE (Mobile-First Full Width)
   return (
-    <div className="space-y-6 max-w-5xl mx-auto">
+    <div className="w-full min-w-0 space-y-4 sm:space-y-5 max-w-2xl mx-auto">
       {/* Contextual Offline Banner (Only shown when browser loses connectivity) */}
       {!isOnline && (
         <div className="p-3.5 bg-amber-50 border border-amber-300 rounded-xl text-amber-950 text-xs flex items-start gap-2.5">
           <WifiOff className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
-          <div>
-            <strong>Network Connectivity Lost:</strong> You can still crop/rotate photos locally or inspect saved drafts, but AI analysis and remote database saving require an internet connection.
+          <div className="min-w-0">
+            <strong>Network Connectivity Lost:</strong> You can crop photos locally or inspect saved drafts, while scanning and saving require an internet connection.
           </div>
         </div>
       )}
 
       {/* Page Title */}
-      <div>
-        <h2 className="text-xl sm:text-2xl font-bold text-slate-900">
+      <div className="min-w-0">
+        <h2 className="text-lg sm:text-2xl font-bold text-slate-900">
           Scan Attendance Register
         </h2>
-        <p className="text-xs sm:text-sm text-slate-600 mt-1">
-          Select the class and date, then capture or upload the daily register page. Extraction starts automatically.
+        <p className="text-xs sm:text-sm text-slate-600 mt-0.5">
+          Choose class &amp; date, then take a photo or upload from gallery.
         </p>
       </div>
 
-      {/* Google Cloud Vision Billing Alert Modal / Card */}
+      {/* Billing Alert Banner */}
       {billingAlert && (
-        <div className="p-4 bg-amber-50 border border-amber-300 rounded-xl text-amber-950 shadow-sm space-y-3">
+        <div className="p-3.5 bg-amber-50 border border-amber-300 rounded-xl text-amber-950 shadow-sm space-y-3">
           <div className="flex items-start gap-3">
             <ShieldCheck className="w-5 h-5 text-amber-700 shrink-0 mt-0.5" />
-            <div className="space-y-1 flex-1">
+            <div className="space-y-1 flex-1 min-w-0">
               <h3 className="text-sm font-bold text-amber-900">
                 Google Cloud Billing Required
               </h3>
@@ -1285,7 +1263,7 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
               rel="noopener noreferrer"
               className="inline-flex items-center gap-1.5 px-4 py-2 bg-amber-800 hover:bg-amber-900 text-white rounded-lg text-xs font-semibold shadow-xs transition-colors"
             >
-              <span>Open Google Cloud Billing Console</span>
+              <span>Open Billing Console</span>
               <ExternalLink className="w-3.5 h-3.5" />
             </a>
 
@@ -1302,12 +1280,12 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
 
       {/* General Error Banner */}
       {errorMessage && !billingAlert && (
-        <div className="p-4 bg-rose-50 border border-rose-200 text-rose-900 rounded-lg text-xs font-medium flex items-start justify-between gap-3 shadow-2xs">
-          <div className="flex items-start gap-2.5">
+        <div className="p-3.5 bg-rose-50 border border-rose-200 text-rose-900 rounded-xl text-xs font-medium flex items-start justify-between gap-2.5 shadow-2xs">
+          <div className="flex items-start gap-2 min-w-0">
             <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
-            <div className="space-y-1">
-              <span className="font-semibold">Analysis Notice:</span>
-              <p className="text-rose-800 leading-relaxed">{errorMessage}</p>
+            <div className="space-y-0.5 min-w-0">
+              <span className="font-semibold">Scan Notice:</span>
+              <p className="text-rose-800 leading-relaxed wrap-break-word">{errorMessage}</p>
             </div>
           </div>
           <button
@@ -1320,46 +1298,48 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
         </div>
       )}
 
-      {/* Main Centered Intake Workflow */}
-      <div className="space-y-5 max-w-3xl">
+      {/* Full-width Mobile Intake Workflow */}
+      <div className="w-full min-w-0 space-y-4">
         {/* 1. Register Details & Format */}
-        <div className="bg-white rounded-lg border border-slate-200 p-5 shadow-xs space-y-4">
-          <div className="flex items-center justify-between pb-2 border-b border-slate-100">
-            <h3 className="text-sm font-bold uppercase tracking-wider text-slate-800">
+        <div className="w-full min-w-0 bg-white rounded-xl border border-slate-200 p-3.5 sm:p-5 shadow-xs space-y-3.5">
+          <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-100">
+            <h3 className="text-xs sm:text-sm font-bold uppercase tracking-wider text-slate-800">
               1. Register Details
             </h3>
-            <span className="text-xs font-normal text-slate-500">Single Daily Scan</span>
+            <span className="text-[11px] font-medium text-slate-500">
+              {registerMode === 'daily' ? 'Single Daily Scan' : 'Multi-Week Sheet'}
+            </span>
           </div>
 
           {/* Workflow Mode Selector */}
-          <div className="grid grid-cols-2 gap-2 p-1 bg-slate-100 rounded-lg">
+          <div className="grid grid-cols-2 gap-1.5 p-1 bg-slate-100 rounded-lg">
             <button
               type="button"
               onClick={() => setRegisterMode('daily')}
-              className={`py-2 px-3 rounded-md text-xs font-semibold transition-all cursor-pointer ${
+              className={`py-2 px-2.5 rounded-md text-xs font-semibold transition-all cursor-pointer ${
                 registerMode === 'daily'
                   ? 'bg-white text-slate-900 shadow-2xs'
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              Daily Register (Single Day)
+              Daily Register
             </button>
             <button
               type="button"
               onClick={() => setRegisterMode('multi-week')}
-              className={`py-2 px-3 rounded-md text-xs font-semibold transition-all cursor-pointer ${
+              className={`py-2 px-2.5 rounded-md text-xs font-semibold transition-all cursor-pointer ${
                 registerMode === 'multi-week'
                   ? 'bg-white text-slate-900 shadow-2xs'
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              Multi-Week Grid (Full Page)
+              Multi-Week Grid
             </button>
           </div>
 
           {/* Class Selection & Date */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="min-w-0">
               <label className="block text-xs font-semibold text-slate-800 mb-1">
                 School Class <span className="text-rose-500">*</span>
               </label>
@@ -1367,7 +1347,7 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
                 value={selectedClass}
                 onChange={(e) => handleClassChange(e.target.value)}
                 disabled={activeClasses.length === 0}
-                className="w-full text-xs py-2 px-3 border border-slate-300 rounded-md bg-white focus:outline-hidden focus:ring-1 focus:ring-emerald-700 font-medium disabled:bg-slate-100"
+                className="w-full text-xs sm:text-sm py-2.5 px-3 border border-slate-300 rounded-lg bg-white focus:outline-hidden focus:ring-1 focus:ring-emerald-700 font-medium disabled:bg-slate-100"
               >
                 <option value="">
                   {activeClasses.length === 0 ? '-- No classes enrolled yet --' : '-- Choose Class --'}
@@ -1381,7 +1361,7 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
             </div>
 
             {registerMode === 'daily' ? (
-              <div>
+              <div className="min-w-0">
                 <label className="block text-xs font-semibold text-slate-800 mb-1">
                   Attendance Date <span className="text-rose-500">*</span>
                 </label>
@@ -1389,11 +1369,11 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
                   type="date"
                   value={selectedDate}
                   onChange={(e) => setSelectedDate(e.target.value)}
-                  className="w-full text-xs py-2 px-3 border border-slate-300 rounded-md bg-white focus:outline-hidden focus:ring-1 focus:ring-emerald-700"
+                  className="w-full text-xs sm:text-sm py-2.5 px-3 border border-slate-300 rounded-lg bg-white focus:outline-hidden focus:ring-1 focus:ring-emerald-700"
                 />
               </div>
             ) : (
-              <div>
+              <div className="min-w-0">
                 <label className="block text-xs font-semibold text-slate-800 mb-1">
                   Week Range On Sheet
                 </label>
@@ -1401,7 +1381,7 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
                   <select
                     value={startingWeek}
                     onChange={(e) => setStartingWeek(Number(e.target.value))}
-                    className="text-xs py-2 px-2 border border-slate-300 rounded-md bg-white"
+                    className="text-xs sm:text-sm py-2.5 px-2.5 border border-slate-300 rounded-lg bg-white"
                   >
                     {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map((w) => (
                       <option key={w} value={w}>
@@ -1412,7 +1392,7 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
                   <select
                     value={weeksCount}
                     onChange={(e) => setWeeksCount(Number(e.target.value))}
-                    className="text-xs py-2 px-2 border border-slate-300 rounded-md bg-white"
+                    className="text-xs sm:text-sm py-2.5 px-2.5 border border-slate-300 rounded-lg bg-white"
                   >
                     <option value={2}>2 Weeks</option>
                     <option value={3}>3 Weeks</option>
@@ -1427,7 +1407,7 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
             <div className="p-3 rounded-lg bg-amber-50 border border-amber-300 text-amber-950 text-xs flex items-start gap-2">
               <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
               <span>
-                No classes exist yet. Go to <strong>Students</strong> and use <strong>Scan Register to Enroll</strong> or <strong>Add Class</strong> first.
+                No classes exist yet. Go to <strong>Students</strong> and add a class or enroll students first.
               </span>
             </div>
           )}
@@ -1436,29 +1416,31 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
             <div className="p-3 rounded-lg bg-amber-50 border border-amber-300 text-amber-950 text-xs flex items-start gap-2">
               <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
               <span>
-                <strong>{selectedClassItem.name}</strong> has 0 enrolled students. Extracted rows will appear unmapped until students are enrolled under <strong>Students</strong>.
+                <strong>{selectedClassItem.name}</strong> has 0 enrolled students. Extracted rows remain unmapped until students are enrolled under <strong>Students</strong>.
               </span>
             </div>
           )}
         </div>
 
-        {/* 2. Photograph Upload, Camera & Auto-Extraction */}
+        {/* 2. Photograph Capture & 9:16 Portrait Preview */}
         <div
           data-tutorial-target="scan-register-capture"
-          className={`bg-white rounded-lg border p-5 shadow-xs space-y-4 transition-all ${
+          className={`w-full min-w-0 bg-white rounded-xl border p-3.5 sm:p-5 shadow-xs space-y-3.5 transition-all ${
             highlightedTarget === 'scan-register-capture'
               ? 'border-emerald-500 ring-2 ring-emerald-500/30'
               : 'border-slate-200'
           }`}
         >
-          <div className="flex items-center justify-between pb-2 border-b border-slate-100">
-            <h3 className="text-sm font-bold uppercase tracking-wider text-slate-800">
+          <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-100">
+            <h3 className="text-xs sm:text-sm font-bold uppercase tracking-wider text-slate-800">
               2. Register Photograph
             </h3>
-            <span className="text-xs text-slate-500">
-              {uploadedImage && imageCaptureSource === 'gallery' && workflowState !== 'processing'
-                ? 'Preview ready before upload'
-                : 'Preview gallery uploads · Auto-scans camera'}
+            <span className="text-[11px] text-slate-500">
+              {uploadedImage
+                ? workflowState === 'processing'
+                  ? 'Scanning sheet...'
+                  : '9:16 Portrait Preview'
+                : 'Camera or Gallery'}
             </span>
           </div>
 
@@ -1484,13 +1466,13 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
               onDragOver={handleDragOver}
               onDragLeave={handleDragLeave}
               onDrop={handleDrop}
-              className={`border-2 border-dashed rounded-lg p-6 sm:p-8 text-center transition-all ${
+              className={`w-full border-2 border-dashed rounded-xl p-4 sm:p-7 text-center transition-all ${
                 isDragging
                   ? 'border-emerald-600 bg-emerald-50/50'
                   : 'border-slate-300 hover:border-slate-400 bg-slate-50/60'
               }`}
             >
-              <div className="max-w-md mx-auto space-y-3">
+              <div className="w-full max-w-md mx-auto space-y-3.5">
                 <div className="w-12 h-12 rounded-full bg-emerald-100 text-emerald-800 flex items-center justify-center mx-auto shadow-2xs">
                   <Camera className="w-6 h-6 text-emerald-700" />
                 </div>
@@ -1500,309 +1482,207 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
                     Capture or upload daily register
                   </h4>
                   <p className="text-xs text-slate-500 mt-1">
-                    Gallery uploads open a preview for rotation or cropping before uploading.
+                    Camera captures scan automatically; gallery uploads open for cropping first.
                   </p>
                 </div>
 
-                <div className="flex flex-wrap items-center justify-center gap-2 pt-2">
+                {/* Two clear choices: 1 Camera option + 1 Gallery upload */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
                   <button
                     type="button"
-                    onClick={() => startLiveCamera('environment')}
-                    className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-md bg-emerald-700 hover:bg-emerald-800 text-white font-semibold text-xs shadow-xs cursor-pointer active:scale-98"
+                    onClick={handleTakePhotoAction}
+                    className="w-full min-h-[44px] inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white font-semibold text-xs sm:text-sm shadow-xs cursor-pointer active:scale-98"
                   >
-                    <Camera className="w-4 h-4" />
-                    <span>Open Camera</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => cameraInputRef.current?.click()}
-                    className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-md border border-emerald-600/40 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 font-medium text-xs shadow-2xs cursor-pointer"
-                  >
-                    <Video className="w-3.5 h-3.5 text-emerald-700" />
-                    <span>Phone Camera</span>
+                    <Camera className="w-4 h-4 shrink-0" />
+                    <span>Take Photo</span>
                   </button>
 
                   <button
                     type="button"
                     onClick={() => fileInputRef.current?.click()}
-                    className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-md border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-medium text-xs shadow-2xs cursor-pointer"
+                    className="w-full min-h-[44px] inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-semibold text-xs sm:text-sm shadow-2xs cursor-pointer active:scale-98"
                   >
-                    <UploadCloud className="w-3.5 h-3.5 text-slate-500" />
-                    <span>Upload Photo</span>
+                    <UploadCloud className="w-4 h-4 text-slate-500 shrink-0" />
+                    <span>Upload from Gallery</span>
                   </button>
                 </div>
               </div>
             </div>
           ) : (
-              /* Image Preview & Inspection Tools */
-              <div className="space-y-3">
-                {/* Contain-style Preview Box (pixels already physically rotated & cropped) */}
-                <div
-                  className="relative rounded-lg overflow-hidden border border-slate-300 bg-slate-950 flex items-center justify-center transition-all aspect-video sm:aspect-16/10"
-                  style={{ minHeight: '260px' }}
-                >
-                  <img
-                    src={uploadedImage}
-                    alt="Physical Register Preview"
-                    className="max-h-80 w-auto h-auto max-w-full object-contain transition-transform duration-200 ease-out"
-                  />
+            /* 9:16 Portrait Preview & Action Controls */
+            <div className="space-y-3 min-w-0">
+              {/* 9:16 Vertical Register Frame */}
+              <div className="relative w-full max-w-[290px] sm:max-w-[330px] mx-auto aspect-9/16 max-h-[66vh] rounded-xl overflow-hidden border border-slate-300 bg-slate-950 flex items-center justify-center">
+                <img
+                  src={uploadedImage}
+                  alt="Physical Register Preview"
+                  className="w-full h-full object-contain"
+                />
 
-                  {/* Top-right overlay actions */}
-                  <div className="absolute top-2.5 right-2.5 flex items-center gap-1.5 bg-slate-900/80 p-1 rounded-lg backdrop-blur-xs border border-slate-800">
-                    <button
-                      type="button"
-                      onClick={() => setIsCropModalOpen(true)}
-                      className="p-1.5 rounded-md hover:bg-slate-800 text-emerald-300 text-xs cursor-pointer"
-                      title="Crop to attendance region"
-                    >
-                      <Crop className="w-4 h-4" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setIsFullscreenPreview(true)}
-                      className="p-1.5 rounded-md hover:bg-slate-800 text-white text-xs cursor-pointer"
-                      title="Inspect full image"
-                    >
-                      <Maximize2 className="w-4 h-4" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleRemoveImage}
-                      className="p-1.5 rounded-md hover:bg-rose-900/80 text-rose-300 hover:text-white text-xs cursor-pointer"
-                      title="Remove image"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
-                  </div>
-
-                  {/* Preprocessing status indicator */}
-                  {(rotation !== 0 || cropBox) && (
-                    <div className="absolute bottom-2.5 left-2.5 bg-slate-900/85 text-white text-[11px] font-mono px-2 py-0.5 rounded border border-slate-800">
-                      {[rotation !== 0 ? `Rotated ${rotation}°` : null, cropBox ? 'Cropped to Table' : null]
-                        .filter(Boolean)
-                        .join(' · ')}
-                    </div>
-                  )}
+                {/* Top-right quick overlay actions */}
+                <div className="absolute top-2.5 right-2.5 flex items-center gap-1 bg-slate-900/85 p-1 rounded-lg backdrop-blur-xs border border-slate-700">
+                  <button
+                    type="button"
+                    onClick={() => setIsCropModalOpen(true)}
+                    className="p-2 rounded-md hover:bg-slate-800 text-emerald-300 cursor-pointer"
+                    title="Crop photo"
+                    aria-label="Crop photo"
+                  >
+                    <Crop className="w-4 h-4" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsFullscreenPreview(true)}
+                    className="p-2 rounded-md hover:bg-slate-800 text-white cursor-pointer"
+                    title="Fullscreen preview"
+                    aria-label="Fullscreen preview"
+                  >
+                    <Maximize2 className="w-4 h-4" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleRemoveImage}
+                    className="p-2 rounded-md hover:bg-rose-900/90 text-rose-300 hover:text-white cursor-pointer"
+                    title="Delete photo"
+                    aria-label="Delete photo"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
                 </div>
 
-                {/* Image Inspection & Preprocessing Toolbar */}
-                <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 bg-slate-50 rounded-lg border border-slate-200 text-xs">
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <span className="text-slate-600 font-medium">Adjust:</span>
-                    <button
-                      type="button"
-                      onClick={handleRotateCcw}
-                      className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-white hover:bg-slate-100 border border-slate-300 rounded text-slate-700 font-semibold shadow-2xs cursor-pointer"
-                      title="Rotate counter-clockwise by 90 degrees"
-                    >
-                      <RotateCcw className="w-3.5 h-3.5 text-slate-600" />
-                      <span>-90°</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={handleRotateCw}
-                      className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-white hover:bg-slate-100 border border-slate-300 rounded text-slate-700 font-semibold shadow-2xs cursor-pointer"
-                      title="Rotate clockwise by 90 degrees"
-                    >
-                      <RotateCw className="w-3.5 h-3.5 text-slate-600" />
-                      <span>+90°</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setIsCropModalOpen(true)}
-                      className={`inline-flex items-center gap-1 px-2.5 py-1.5 border rounded font-semibold shadow-2xs cursor-pointer ${
-                        cropBox
-                          ? 'bg-emerald-50 border-emerald-400 text-emerald-900'
-                          : 'bg-white hover:bg-slate-100 border-slate-300 text-slate-700'
-                      }`}
-                      title="Crop to the attendance table region"
-                    >
-                      <Crop className="w-3.5 h-3.5 text-emerald-700" />
-                      <span>{cropBox ? 'Edit Crop' : 'Crop Table'}</span>
-                    </button>
-
-                    {(rotation !== 0 || cropBox) && (
-                      <button
-                        type="button"
-                        onClick={handleResetOrientationAndCrop}
-                        className="text-[11px] text-slate-500 hover:text-slate-800 underline ml-1 cursor-pointer"
-                      >
-                        Reset
-                      </button>
-                    )}
-                  </div>
-
-                  <div className="flex items-center gap-2.5">
-                    <button
-                      type="button"
-                      onClick={() => startLiveCamera('environment')}
-                      className="inline-flex items-center gap-1 text-emerald-800 hover:text-emerald-950 font-semibold text-xs cursor-pointer"
-                      title="Open live camera to retake photo"
-                    >
-                      <Camera className="w-3.5 h-3.5" />
-                      <span>Retake</span>
-                    </button>
-                    <span className="text-slate-300">|</span>
-                    <button
-                      type="button"
-                      onClick={() => fileInputRef.current?.click()}
-                      className="text-slate-600 hover:text-slate-900 font-semibold text-xs cursor-pointer"
-                    >
-                      Browse File
-                    </button>
-                  </div>
-                </div>
-
-                {/* Low-resolution warning if cropped/uploaded image falls below recommended px threshold */}
-                {preprocessMeta?.isLowResolution && (
-                  <div className="p-2.5 rounded-lg bg-amber-50 border border-amber-300 text-[11px] text-amber-950 flex items-start gap-2">
-                    <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
-                    <span>
-                      Image resolution ({preprocessMeta.outputWidth}×{preprocessMeta.outputHeight}px) is below {MIN_RECOMMENDED_SHORT_SIDE_PX}px on its short edge. Handwriting may be blurry — consider retaking closer or widening the crop.
-                    </span>
-                  </div>
-                )}
-
-                {/* Metadata & Resize Notice */}
-                <div className="flex items-center justify-between text-xs text-slate-500 px-1">
-                  <div className="flex items-center gap-1.5 truncate">
-                    <FileCheck className="w-4 h-4 text-emerald-600 shrink-0" />
-                    <span className="font-medium text-slate-800 truncate">{imageFileName}</span>
-                    <span className="text-slate-400">({imageFileSize})</span>
-                    {imageDimensions && (
-                      <span className="text-slate-400 hidden sm:inline">
-                        · {imageDimensions.width}×{imageDimensions.height}px
-                      </span>
-                    )}
-                  </div>
-
-                  {isResized && (
-                    <span className="text-[11px] text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
-                      Aspect-Preserving Resize (&le;{MAX_DIMENSION}px)
-                    </span>
-                  )}
-                </div>
-
-                {/* Gallery Preview Ready Banner & Direct Upload Action */}
-                {imageCaptureSource === 'gallery' && workflowState !== 'processing' && !geminiResult && (
-                  <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200 flex flex-wrap items-center justify-between gap-3">
-                    <div className="text-xs text-emerald-950">
-                      <span className="font-bold">Image preview ready.</span>{' '}
-                      <span className="text-emerald-800">
-                        {selectedClass
-                          ? 'Inspect, rotate, or crop the sheet above, then upload when ready.'
-                          : 'Select a class in Step 1 above before uploading for OCR.'}
-                      </span>
-                    </div>
-                    {selectedClass && (
-                      <button
-                        type="button"
-                        onClick={() => void handleAnalyzeRegister()}
-                        className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-md bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold shadow-xs cursor-pointer"
-                      >
-                        <UploadCloud className="w-4 h-4" />
-                        <span>Upload &amp; Analyze</span>
-                      </button>
-                    )}
+                {cropBox && (
+                  <div className="absolute bottom-2.5 left-2.5 bg-slate-900/85 text-white text-[11px] font-medium px-2 py-0.5 rounded border border-slate-700">
+                    Cropped
                   </div>
                 )}
               </div>
-            )}
-          </div>
 
-          {/* 3. Extraction Engine & Action Controls */}
-          <div className="bg-white rounded-lg border border-slate-200 p-5 shadow-xs space-y-4">
-            <div className="flex items-center justify-between pb-2 border-b border-slate-100">
-              <span className="text-xs font-semibold uppercase tracking-wider text-slate-700">
-                3. Attendance Extraction
-              </span>
+              {/* Clean Mobile Action Row: Crop, Retake, Delete, Gallery */}
+              <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center justify-between gap-2 p-2.5 bg-slate-50 rounded-xl border border-slate-200 text-xs">
+                <div className="flex items-center gap-1.5 flex-wrap col-span-2 sm:col-span-1">
+                  <button
+                    type="button"
+                    onClick={() => setIsCropModalOpen(true)}
+                    className={`min-h-[38px] inline-flex items-center gap-1.5 px-3 py-1.5 border rounded-lg font-semibold shadow-2xs cursor-pointer ${
+                      cropBox
+                        ? 'bg-emerald-50 border-emerald-400 text-emerald-900'
+                        : 'bg-white hover:bg-slate-100 border-slate-300 text-slate-700'
+                    }`}
+                  >
+                    <Crop className="w-3.5 h-3.5 text-emerald-700" />
+                    <span>{cropBox ? 'Edit Crop' : 'Crop'}</span>
+                  </button>
 
-              {workflowState === 'ready-to-analyze' && (
-                <span className="text-xs font-semibold text-emerald-700 flex items-center gap-1">
-                  <CheckCircle2 className="w-3.5 h-3.5" />
-                  Ready
-                </span>
+                  {cropBox && (
+                    <button
+                      type="button"
+                      onClick={handleResetCrop}
+                      className="text-[11px] text-slate-600 hover:text-slate-900 underline px-1.5 cursor-pointer"
+                    >
+                      Reset Crop
+                    </button>
+                  )}
+                </div>
+
+                <div className="col-span-2 sm:col-span-1 flex flex-wrap items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={handleRetakePhoto}
+                    className="flex-1 sm:flex-initial min-h-[38px] inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-white hover:bg-emerald-50 border border-emerald-300 text-emerald-800 font-semibold text-xs cursor-pointer"
+                  >
+                    <Camera className="w-3.5 h-3.5" />
+                    <span>Retake</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleRemoveImage}
+                    className="flex-1 sm:flex-initial min-h-[38px] inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-white hover:bg-rose-50 border border-rose-200 text-rose-700 font-semibold text-xs cursor-pointer"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Delete</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="min-h-[38px] inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-white hover:bg-slate-100 border border-slate-300 text-slate-700 font-semibold text-xs cursor-pointer"
+                  >
+                    <UploadCloud className="w-3.5 h-3.5 text-slate-500" />
+                    <span>Gallery</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Low-resolution warning */}
+              {preprocessMeta?.isLowResolution && (
+                <div className="p-2.5 rounded-lg bg-amber-50 border border-amber-300 text-[11px] text-amber-950 flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+                  <span>
+                    Image resolution ({preprocessMeta.outputWidth}×{preprocessMeta.outputHeight}px) is below {MIN_RECOMMENDED_SHORT_SIDE_PX}px on its short edge. Handwriting may be blurry — consider retaking closer or widening the crop.
+                  </span>
+                </div>
               )}
+
+              {/* File Metadata */}
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500 px-0.5 min-w-0">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <FileCheck className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span className="font-medium text-slate-800 truncate">{imageFileName}</span>
+                  <span className="text-slate-400 shrink-0">({imageFileSize})</span>
+                </div>
+
+                {isResized && (
+                  <span className="text-[11px] text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 shrink-0">
+                    Optimized (&le;{MAX_DIMENSION}px)
+                  </span>
+                )}
+              </div>
+
+              {/* Active Extraction Progress Bar with Cancel */}
               {workflowState === 'processing' && (
-                <span className="text-xs font-semibold text-blue-700 flex items-center gap-1">
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  Extracting...
-                </span>
-              )}
-              {workflowState === 'image-selected' && (
-                <span className="text-xs font-medium text-amber-700 flex items-center gap-1">
-                  <AlertCircle className="w-3.5 h-3.5" />
-                  Select class to start
-                </span>
-              )}
-              {workflowState === 'empty' && (
-                <span className="text-xs text-slate-400">
-                  Awaiting photo
-                </span>
-              )}
-            </div>
-
-            {/* Active OCR Engine Readout (Google Cloud Vision only) */}
-            <div className="flex items-center justify-between px-3 py-2 rounded-md bg-slate-50 border border-slate-200 text-xs">
-              <span className="font-semibold text-slate-700">OCR Engine</span>
-              <span className="inline-flex items-center gap-1.5 font-semibold text-emerald-800">
-                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                <span>
-                  Google Cloud Vision API{cloudVisionConfigured ? '' : ' (Not Configured)'}
-                </span>
-              </span>
-            </div>
-
-            {/* PROCESSING PROGRESS STATE WITH CANCEL */}
-            {workflowState === 'processing' && (
-              <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-lg flex flex-wrap items-center justify-between gap-3">
-                <div className="flex items-center gap-2.5">
-                  <Loader2 className="w-5 h-5 text-emerald-700 animate-spin shrink-0" />
-                  <div>
-                    <div className="text-xs font-bold text-emerald-950">
-                      Extracting Attendance...
-                    </div>
-                    <div className="text-[11px] text-emerald-800 font-medium mt-0.5">
-                      {processingPhase || 'Preparing photograph...'}
+                <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-xl flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <Loader2 className="w-5 h-5 text-emerald-700 animate-spin shrink-0" />
+                    <div className="min-w-0">
+                      <div className="text-xs font-bold text-emerald-950">
+                        Extracting Attendance...
+                      </div>
+                      <div className="text-[11px] text-emerald-800 font-medium mt-0.5 truncate">
+                        {processingPhase || 'Preparing photograph...'}
+                      </div>
                     </div>
                   </div>
+                  <button
+                    type="button"
+                    onClick={handleCancelAnalysis}
+                    className="px-3 py-1.5 rounded-lg bg-white hover:bg-rose-50 border border-rose-300 text-rose-800 text-xs font-semibold cursor-pointer shrink-0"
+                  >
+                    Cancel
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={handleCancelAnalysis}
-                  className="px-3.5 py-1.5 rounded-md bg-white hover:bg-rose-50 border border-rose-300 text-rose-800 text-xs font-semibold cursor-pointer"
-                >
-                  Cancel Extraction
-                </button>
-              </div>
-            )}
+              )}
 
-            {/* Re-run / Manual Trigger button (secondary when already auto-triggered or after edit/crop/cancel) */}
-            {workflowState !== 'processing' && (
-              <button
-                type="button"
-                disabled={workflowState !== 'ready-to-analyze' && workflowState !== 'error'}
-                onClick={() => void handleAnalyzeRegister()}
-                className={`w-full py-3 px-4 rounded-lg font-bold text-sm flex items-center justify-center gap-2 transition-all ${
-                  workflowState === 'ready-to-analyze' || workflowState === 'error'
-                    ? 'bg-emerald-700 hover:bg-emerald-800 text-white shadow-sm cursor-pointer'
-                    : 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed'
-                }`}
-              >
-                <Sparkles className={`w-4 h-4 ${workflowState === 'ready-to-analyze' || workflowState === 'error' ? 'text-amber-300' : 'text-slate-400'}`} />
-                <span>
-                  {workflowState === 'error'
-                    ? 'Retry Extraction'
-                    : imageCaptureSource === 'gallery' && !geminiResult
-                    ? 'Upload & Analyze Register'
-                    : 'Analyze / Re-Run'}
-                </span>
-              </button>
-            )}
-          </div>
+              {/* Action prompt when gallery preview is ready or error retry is needed (no Sparkles, no Upload & Analyze Register) */}
+              {workflowState !== 'processing' && (!selectedClass ? (
+                <div className="p-3 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-900">
+                  Select a class in Step 1 above to extract this register photograph.
+                </div>
+              ) : (imageCaptureSource === 'gallery' && !geminiResult) || workflowState === 'error' ? (
+                <div className="pt-1">
+                  <button
+                    type="button"
+                    onClick={() => void handleAnalyzeRegister()}
+                    className="w-full min-h-[44px] py-2.5 px-4 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-sm font-bold flex items-center justify-center gap-2 shadow-xs cursor-pointer active:scale-99"
+                  >
+                    <ScanLine className="w-4 h-4 shrink-0" />
+                    <span>{workflowState === 'error' ? 'Retry Scan' : 'Scan Register'}</span>
+                  </button>
+                </div>
+              ) : null)}
+            </div>
+          )}
+        </div>
 
           {/* Developer Tools (hidden unless explicitly enabled in Settings) */}
           {isDeveloperDiagnosticsEnabled() && (
@@ -1919,7 +1799,7 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
           {/* Top Bar */}
           <div className="bg-slate-950/85 backdrop-blur-md px-4 py-3 flex items-center justify-between text-white border-b border-slate-800/80 z-20">
             <div className="flex items-center gap-2">
-              <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
+              <div className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
               <span className="text-xs font-bold tracking-wide text-white">
                 Register Camera {facingMode === 'environment' ? '· Rear' : '· Front'}
               </span>
@@ -1948,8 +1828,8 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
             </div>
           </div>
 
-          {/* Video Viewport with Register Framing Guide */}
-          <div className="relative flex-1 bg-black flex items-center justify-center overflow-hidden">
+          {/* Video Viewport with 9:16 Register Framing Guide */}
+          <div className="relative flex-1 bg-black flex items-center justify-center overflow-hidden p-4">
             {isCameraStarting && (
               <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-slate-950/90 text-white gap-3 p-4 text-center">
                 <Loader2 className="w-8 h-8 animate-spin text-emerald-500" />
@@ -1976,7 +1856,7 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
                     className="flex-1 py-2.5 px-3 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-md flex items-center justify-center gap-1.5 cursor-pointer shadow-sm"
                   >
                     <Camera className="w-4 h-4" />
-                    <span>Open Phone Camera App</span>
+                    <span>Open Phone Camera</span>
                   </button>
                   <button
                     type="button"
@@ -1990,7 +1870,6 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
               </div>
             ) : (
               <>
-                {/* Live video feed */}
                 <video
                   ref={videoRef}
                   autoPlay
@@ -2001,26 +1880,16 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
                   className="w-full h-full object-cover sm:object-contain"
                 />
 
-                {/* Document Register Frame Overlay Guide */}
-                <div className="absolute inset-4 sm:inset-12 pointer-events-none flex flex-col items-center justify-between border-2 border-dashed border-emerald-400/70 rounded-xl shadow-[0_0_0_9999px_rgba(0,0,0,0.5)]">
-                  {/* Top guide label */}
-                  <div className="bg-slate-950/85 backdrop-blur-xs text-emerald-300 text-[11px] font-semibold px-3.5 py-1 rounded-full mt-3 border border-emerald-500/40 shadow-sm">
-                    Align school register ledger inside this frame
-                  </div>
+                {/* 9:16 Portrait Register Frame Overlay Guide */}
+                <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-4">
+                  <div className="w-[82vw] max-w-[350px] aspect-9/16 max-h-[75vh] border-2 border-dashed border-emerald-400/80 rounded-xl shadow-[0_0_0_9999px_rgba(0,0,0,0.52)] flex flex-col items-center justify-between p-2.5">
+                    <div className="bg-slate-950/85 backdrop-blur-xs text-emerald-300 text-[11px] font-semibold px-3 py-1 rounded-full border border-emerald-500/40 shadow-sm text-center">
+                      Align vertical register page inside frame
+                    </div>
 
-                  {/* Corner accents */}
-                  <div className="w-full flex justify-between px-2">
-                    <div className="w-6 h-6 border-t-4 border-l-4 border-emerald-400" />
-                    <div className="w-6 h-6 border-t-4 border-r-4 border-emerald-400" />
-                  </div>
-                  <div className="w-full flex justify-between px-2 pb-2">
-                    <div className="w-6 h-6 border-b-4 border-l-4 border-emerald-400" />
-                    <div className="w-6 h-6 border-b-4 border-r-4 border-emerald-400" />
-                  </div>
-
-                  {/* Bottom hint label */}
-                  <div className="bg-slate-950/85 backdrop-blur-xs text-slate-200 text-[11px] px-3.5 py-1 rounded-full mb-3 border border-slate-700 shadow-sm">
-                    Hold phone directly above sheet in bright classroom lighting
+                    <div className="bg-slate-950/85 backdrop-blur-xs text-slate-200 text-[11px] px-3 py-1 rounded-full border border-slate-700 shadow-sm text-center">
+                      Hold upright in clear lighting
+                    </div>
                   </div>
                 </div>
               </>
@@ -2028,8 +1897,7 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
           </div>
 
           {/* Bottom Shutter Controls Bar */}
-          <div className="bg-slate-950/95 backdrop-blur-md px-6 py-4 flex items-center justify-between z-20 border-t border-slate-800">
-            {/* Fallback to phone's default native camera */}
+          <div className="bg-slate-950/95 backdrop-blur-md px-6 py-4 flex items-center justify-between z-20 border-t border-slate-800 pb-[max(1rem,env(safe-area-inset-bottom))]">
             <button
               type="button"
               onClick={() => {
@@ -2037,14 +1905,11 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
                 cameraInputRef.current?.click();
               }}
               className="text-xs text-slate-300 hover:text-white flex items-center gap-1.5 font-medium cursor-pointer"
-              title="Switch to native camera app"
             >
               <Camera className="w-4 h-4 text-emerald-400" />
-              <span className="hidden sm:inline">Use Phone Camera App</span>
-              <span className="sm:hidden">Phone App</span>
+              <span>Phone App</span>
             </button>
 
-            {/* Main Shutter Button */}
             <button
               type="button"
               disabled={isCameraStarting || !isVideoReady || Boolean(cameraError)}
@@ -2057,7 +1922,6 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
               </div>
             </button>
 
-            {/* Cancel Button */}
             <button
               type="button"
               onClick={stopLiveCamera}
@@ -2071,7 +1935,7 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
 
       {/* FULLSCREEN PREVIEW MODAL */}
       {isFullscreenPreview && uploadedImage && (
-        <div className="fixed inset-0 z-50 bg-slate-950/90 backdrop-blur-xs flex flex-col p-4">
+        <div className="fixed inset-0 z-50 bg-slate-950/95 backdrop-blur-xs flex flex-col p-4">
           <div className="flex items-center justify-between pb-3 text-white border-b border-slate-800">
             <div className="text-sm font-semibold truncate">
               {imageFileName} · {selectedClass || 'Unassigned'}
@@ -2079,15 +1943,19 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={handleRotateCw}
-                className="px-2.5 py-1 rounded bg-slate-800 text-xs text-white hover:bg-slate-700"
+                onClick={() => {
+                  setIsFullscreenPreview(false);
+                  handleRemoveImage();
+                }}
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-rose-900/70 hover:bg-rose-800 text-xs text-white cursor-pointer"
               >
-                Rotate +90°
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Delete</span>
               </button>
               <button
                 type="button"
                 onClick={() => setIsFullscreenPreview(false)}
-                className="p-1 rounded text-slate-400 hover:text-white"
+                className="p-1 rounded text-slate-400 hover:text-white cursor-pointer"
               >
                 <X className="w-6 h-6" />
               </button>
@@ -2098,22 +1966,19 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
             <img
               src={uploadedImage}
               alt="Fullscreen Register Preview"
-              className="max-h-[85vh] max-w-[90vw] object-contain transition-transform"
+              className="max-h-[85vh] max-w-[90vw] object-contain"
             />
           </div>
         </div>
       )}
 
-      {/* MANUAL REGISTER CROPPER MODAL */}
+      {/* FULLSCREEN ANDROID-STYLE DRAG-EDGE CROPPER */}
       {rawSourceImage && (
         <RegisterImageCropperModal
           isOpen={isCropModalOpen}
           imageUrl={rawSourceImage}
-          rotation={rotation}
           initialCropBox={cropBox}
           imageDimensions={rawDimensions || imageDimensions}
-          onRotateCw={handleRotateCw}
-          onRotateCcw={handleRotateCcw}
           onApplyCrop={handleApplyCrop}
           onClose={() => setIsCropModalOpen(false)}
         />
