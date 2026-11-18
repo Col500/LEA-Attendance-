@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { validateAndBuildSessionDraft, getReviewQueueStats } from './attendanceValidation';
 import {
   addStoredAttendanceSession,
+  clearAllStoredAttendanceRecords,
+  deleteStoredAttendanceSession,
   deleteStoredSessionDraft,
   getStoredAttendanceSessions,
   getStoredSessionDrafts,
@@ -228,6 +230,28 @@ function runPilotReadinessTests() {
   assert.equal(parsedAttendance.rows[3].studentNameDetected, 'Amina Yusuf');
   assert.equal(parsedAttendance.rows[3].marks[0].status, 'BLANK');
   console.log('✓ Test 6 passed: Google Cloud Vision spatial row reconstruction, attendance parser, and roster parser verified');
+
+  // 7. Single & bulk local attendance record deletion
+  clearAllStoredAttendanceRecords();
+  assert.equal(getStoredAttendanceSessions().length, 0);
+
+  const sessionA: AttendanceSession = { ...sessionWithLegacyPhoto, id: 'ses-del-a' };
+  const sessionB: AttendanceSession = { ...sessionWithLegacyPhoto, id: 'ses-del-b' };
+  addStoredAttendanceSession(sessionA);
+  addStoredAttendanceSession(sessionB);
+  assert.equal(getStoredAttendanceSessions().length, 2);
+
+  const afterSingleDelete = deleteStoredAttendanceSession('ses-del-a');
+  assert.equal(afterSingleDelete.length, 1);
+  assert.equal(afterSingleDelete[0].id, 'ses-del-b');
+
+  saveStoredSessionDraft(emptyClassDraft);
+  assert.equal(getStoredSessionDrafts().length, 1);
+
+  clearAllStoredAttendanceRecords();
+  assert.equal(getStoredAttendanceSessions().length, 0);
+  assert.equal(getStoredSessionDrafts().length, 0);
+  console.log('✓ Test 7 passed: Single & bulk local attendance session deletion verified');
 
   console.log('\nAll Pilot Readiness & Security Tests Passed!');
 }

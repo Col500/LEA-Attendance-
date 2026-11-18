@@ -163,9 +163,31 @@ function normalizeAdm(adm: string): string {
   return adm.trim().toUpperCase().replace(/\s+/g, '');
 }
 
+function tokenizePersonName(name: string): string[] {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z\s]/g, ' ')
+    .split(/\s+/)
+    .map((w) => w.trim())
+    .filter((w) => w.length >= 3);
+}
+
+function countSharedNameTokens(a: string, b: string): number {
+  const tokensA = new Set(tokenizePersonName(a));
+  if (tokensA.size === 0) return 0;
+  const tokensB = tokenizePersonName(b);
+  let shared = 0;
+  for (const t of tokensB) {
+    if (tokensA.has(t)) shared += 1;
+  }
+  return shared;
+}
+
 /**
  * Associates a physical register row with an enrolled student from the class roster.
- * NEVER assumes physical row N corresponds to DB student N unless confirmed by administrator.
+ * Uses Admission Number / Exact Name first, then automatically assigns the enrolled pupil
+ * recorded at that physical Row # (`studentNumber === rowNumber`) unless OCR identity explicitly
+ * conflicts with another pupil.
  */
 export function resolveStudentMapping(
   rowNumber: number,
@@ -175,6 +197,7 @@ export function resolveStudentMapping(
 ): RowStudentMapping {
   const cleanName = detectedName ? detectedName.trim() : null;
   const cleanAdm = detectedAdmissionNumber ? detectedAdmissionNumber.trim() : null;
+  const rowOrderCandidate = classStudents.find((s) => s.studentNumber === rowNumber);
 
   // 1. Exact Admission Number Match (highest reliability when uniquely matched)
   if (cleanAdm && cleanAdm.length >= 4) {
@@ -216,10 +239,8 @@ export function resolveStudentMapping(
     }
   }
 
-  // 3. Partial name or row-order suggestion ONLY (studentId remains NULL until admin confirms)
-  let suggestedStudent: Student | undefined;
-  let suggestionReason = 'Could not match physical row to an enrolled student reliably.';
-
+  // 3. Check if detected name/tokens uniquely point to a specific enrolled student
+  let nameMatchedCandidate: Student | undefined;
   if (cleanName && cleanName.length >= 3) {
     const targetName = normalizeName(cleanName);
     const partialMatches = classStudents.filter((s) => {
@@ -227,31 +248,73 @@ export function resolveStudentMapping(
       return sName.includes(targetName) || targetName.includes(sName);
     });
     if (partialMatches.length === 1) {
-      suggestedStudent = partialMatches[0];
-      suggestionReason = `Partial name similarity with "${suggestedStudent.fullName}" — admin confirmation required`;
+      nameMatchedCandidate = partialMatches[0];
+    } else {
+      const tokenScored = classStudents
+        .map((s) => ({ student: s, score: countSharedNameTokens(cleanName, s.fullName) }))
+        .filter((x) => x.score >= 1)
+        .sort((a, b) => b.score - a.score);
+      if (
+        tokenScored.length === 1 ||
+        (tokenScored.length > 1 && tokenScored[0].score > tokenScored[1].score)
+      ) {
+        nameMatchedCandidate = tokenScored[0].student;
+      }
     }
   }
 
-  if (!suggestedStudent) {
-    const rowOrderCandidate = classStudents.find((s) => s.studentNumber === rowNumber);
-    if (rowOrderCandidate) {
-      suggestedStudent = rowOrderCandidate;
-      suggestionReason = cleanName
-        ? `Detected "${cleanName}" does not match roster #${rowNumber} ("${rowOrderCandidate.fullName}") — verify order`
-        : `No student name detected; row-order candidate is #${rowNumber} ("${rowOrderCandidate.fullName}") — confirm mapping`;
-    }
+  // If OCR explicitly names a DIFFERENT enrolled student than the Row # pupil, hold for review
+  if (nameMatchedCandidate && nameMatchedCandidate.id !== rowOrderCandidate?.id) {
+    return {
+      rowNumber,
+      detectedName: cleanName,
+      detectedAdmissionNumber: cleanAdm,
+      studentId: null,
+      suggestedStudentId: nameMatchedCandidate.id,
+      mappingConfidence: 'ROW_ORDER_SUGGESTED',
+      mappingConfirmed: false,
+      reviewRequired: true,
+      notes: `Detected "${cleanName}" resembles "${nameMatchedCandidate.fullName}" (#${nameMatchedCandidate.studentNumber}), not Row #${rowNumber} — confirm mapping`
+    };
+  }
+
+  // Check explicit admission number conflict against Row # pupil
+  const hasConflictingExplicitAdm =
+    Boolean(cleanAdm && cleanAdm.length >= 4) &&
+    Boolean(rowOrderCandidate?.admissionNumber) &&
+    normalizeAdm(cleanAdm!) !== normalizeAdm(rowOrderCandidate!.admissionNumber!);
+
+  // 4. Enrollment Row-Number Auto-Assignment:
+  // Any pupil enrolled in Row #N automatically owns marks detected in Row #N on subsequent scans
+  // unless an explicit conflicting identity was detected.
+  if (rowOrderCandidate && !hasConflictingExplicitAdm) {
+    return {
+      rowNumber,
+      detectedName: cleanName,
+      detectedAdmissionNumber: cleanAdm,
+      studentId: rowOrderCandidate.id,
+      suggestedStudentId: rowOrderCandidate.id,
+      mappingConfidence: 'ROW_ORDER_MATCH',
+      mappingConfirmed: true,
+      reviewRequired: false,
+      notes: cleanName
+        ? `Auto-assigned to enrolled Row #${rowNumber} (${rowOrderCandidate.fullName})`
+        : `Auto-assigned from enrolled Row #${rowNumber} (${rowOrderCandidate.fullName})`
+    };
   }
 
   return {
     rowNumber,
     detectedName: cleanName,
     detectedAdmissionNumber: cleanAdm,
-    studentId: null, // Nullable until reliably mapped or confirmed by administrator
-    suggestedStudentId: suggestedStudent?.id || null,
-    mappingConfidence: suggestedStudent ? 'ROW_ORDER_SUGGESTED' : 'UNMAPPED',
+    studentId: null,
+    suggestedStudentId: rowOrderCandidate?.id || null,
+    mappingConfidence: rowOrderCandidate ? 'ROW_ORDER_SUGGESTED' : 'UNMAPPED',
     mappingConfirmed: false,
     reviewRequired: true,
-    notes: suggestionReason
+    notes: rowOrderCandidate
+      ? `Detected admission number (${cleanAdm}) does not match Row #${rowNumber} (${rowOrderCandidate.fullName}) — verify mapping`
+      : 'No student enrolled at this row number yet.'
   };
 }
 

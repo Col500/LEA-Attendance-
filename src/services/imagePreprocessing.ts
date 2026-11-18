@@ -2,6 +2,8 @@ import type { NormalizedBoundingBox, NormalizedCropBox } from '../types/attendan
 
 export const DEFAULT_MAX_REGISTER_DIMENSION = 1800;
 export const MIN_RECOMMENDED_SHORT_SIDE_PX = 650;
+export const MIN_UPSCALE_TARGET_SHORT_SIDE_PX = 1150;
+export const MAX_CONDITIONAL_UPSCALE_FACTOR = 2;
 export const DEFAULT_PREPROCESS_JPEG_QUALITY = 0.86;
 
 export interface PreprocessedImageResult {
@@ -41,6 +43,93 @@ export function computeAspectPreservingSize(
     height: Math.max(1, Math.round(safeH * scale)),
     wasResized: true
   };
+}
+
+/**
+ * Conditionally upscales tight crops or low-resolution captures (up to 2x toward ~1150px short side)
+ * while still clamping oversized photos down to maxDimension.
+ * Preserves aspect ratio and never bloats already-sharp photos.
+ */
+export function computeConditionalUpscaleSize(
+  width: number,
+  height: number,
+  maxDimension: number = DEFAULT_MAX_REGISTER_DIMENSION
+): { width: number; height: number; wasResized: boolean; wasUpscaled: boolean } {
+  const safeW = Math.max(1, Math.round(width));
+  const safeH = Math.max(1, Math.round(height));
+  const longest = Math.max(safeW, safeH);
+  const shortest = Math.min(safeW, safeH);
+
+  if (longest > maxDimension) {
+    const down = computeAspectPreservingSize(safeW, safeH, maxDimension);
+    return { ...down, wasUpscaled: false };
+  }
+
+  if (shortest < MIN_UPSCALE_TARGET_SHORT_SIDE_PX && longest < maxDimension) {
+    const targetByShort = MIN_UPSCALE_TARGET_SHORT_SIDE_PX / shortest;
+    const maxAllowedByLong = maxDimension / longest;
+    const scale = Math.min(MAX_CONDITIONAL_UPSCALE_FACTOR, targetByShort, maxAllowedByLong);
+    if (scale > 1.05) {
+      return {
+        width: Math.max(1, Math.round(safeW * scale)),
+        height: Math.max(1, Math.round(safeH * scale)),
+        wasResized: true,
+        wasUpscaled: true
+      };
+    }
+  }
+
+  return { width: safeW, height: safeH, wasResized: false, wasUpscaled: false };
+}
+
+/**
+ * Applies a fast, thresholded 3x3 luminance unsharp mask on a canvas so small printed digits
+ * and faint ink strokes stay crisp without adding flat-paper speckles or altering red ink hues.
+ */
+function sharpenRegisterCanvas(canvas: HTMLCanvasElement, amount = 0.28, threshold = 7): void {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  const { width: w, height: h } = canvas;
+  if (w < 8 || h < 8 || w * h > 4_000_000) return;
+
+  const imgData = ctx.getImageData(0, 0, w, h);
+  const data = imgData.data;
+  const total = w * h;
+  const lum = new Float32Array(total);
+
+  for (let i = 0; i < total; i++) {
+    const idx = i << 2;
+    lum[i] = 0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2];
+  }
+
+  for (let y = 1; y < h - 1; y++) {
+    const rowOff = y * w;
+    for (let x = 1; x < w - 1; x++) {
+      const p = rowOff + x;
+      const center = lum[p];
+      const blur =
+        (lum[p - w - 1] +
+          lum[p - w] +
+          lum[p - w + 1] +
+          lum[p - 1] +
+          center +
+          lum[p + 1] +
+          lum[p + w - 1] +
+          lum[p + w] +
+          lum[p + w + 1]) /
+        9;
+      const diff = center - blur;
+      if (Math.abs(diff) <= threshold) continue;
+
+      const delta = diff * amount;
+      const idx = p << 2;
+      data[idx] = Math.min(255, Math.max(0, Math.round(data[idx] + delta)));
+      data[idx + 1] = Math.min(255, Math.max(0, Math.round(data[idx + 1] + delta)));
+      data[idx + 2] = Math.min(255, Math.max(0, Math.round(data[idx + 2] + delta)));
+    }
+  }
+
+  ctx.putImageData(imgData, 0, 0);
 }
 
 /**
@@ -221,11 +310,11 @@ export async function preprocessRegisterImage(params: {
       ? Math.max(1, Math.round(validCrop.height * rotDims.height))
       : rotDims.height;
 
-    const resized = computeAspectPreservingSize(cropW, cropH, maxDimension);
+    const sized = computeConditionalUpscaleSize(cropW, cropH, maxDimension);
 
     const outCanvas = document.createElement('canvas');
-    outCanvas.width = resized.width;
-    outCanvas.height = resized.height;
+    outCanvas.width = sized.width;
+    outCanvas.height = sized.height;
     const outCtx = outCanvas.getContext('2d');
     if (!outCtx) {
       throw new Error('Browser canvas context unavailable for output encoding.');
@@ -236,7 +325,7 @@ export async function preprocessRegisterImage(params: {
 
     if (normRotation === 0 && !validCrop) {
       // Fast path: draw directly without allocating an intermediate full-resolution rotated canvas
-      outCtx.drawImage(decoded.drawable, 0, 0, resized.width, resized.height);
+      outCtx.drawImage(decoded.drawable, 0, 0, sized.width, sized.height);
     } else {
       // Apply quarter-turn rotation + crop onto intermediate canvas, then scale onto outCanvas
       const rotatedCanvas = document.createElement('canvas');
@@ -269,9 +358,13 @@ export async function preprocessRegisterImage(params: {
         cropH,
         0,
         0,
-        resized.width,
-        resized.height
+        sized.width,
+        sized.height
       );
+    }
+
+    if (sized.wasUpscaled || validCrop) {
+      sharpenRegisterCanvas(outCanvas);
     }
 
     const isPngSource =
@@ -284,18 +377,18 @@ export async function preprocessRegisterImage(params: {
         : outCanvas.toDataURL('image/jpeg', DEFAULT_PREPROCESS_JPEG_QUALITY);
 
     const estimatedBytes = Math.round((dataUrl.length * 3) / 4);
-    const isLowResolution = Math.min(resized.width, resized.height) < MIN_RECOMMENDED_SHORT_SIDE_PX;
+    const isLowResolution = Math.min(sized.width, sized.height) < MIN_RECOMMENDED_SHORT_SIDE_PX;
 
     return {
       dataUrl,
       mimeType: outputMime,
       originalWidth: decoded.width,
       originalHeight: decoded.height,
-      outputWidth: resized.width,
-      outputHeight: resized.height,
+      outputWidth: sized.width,
+      outputHeight: sized.height,
       rotationApplied: normRotation,
       wasCropped: Boolean(validCrop),
-      wasResized: resized.wasResized,
+      wasResized: sized.wasResized,
       isLowResolution,
       estimatedBytes
     };

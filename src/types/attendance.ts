@@ -291,6 +291,7 @@ export interface AttendanceCell {
 export type MappingConfidence =
   | 'EXACT_ADMISSION'
   | 'EXACT_NAME'
+  | 'ROW_ORDER_MATCH'
   | 'MANUAL'
   | 'ROW_ORDER_SUGGESTED'
   | 'UNMAPPED';

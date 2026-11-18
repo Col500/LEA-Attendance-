@@ -627,7 +627,8 @@ export function verifyRegisterCellsFromRgba(input: RgbaVerificationInput): Gemin
   }
 
   // 3. Determine target row count & map existing OCR rows onto exact lattice indices 0..N-1
-  let targetRowCount = extraction.rows.length;
+  const maxOcrRowNum = extraction.rows.reduce((maxN, r) => Math.max(maxN, r.rowNumber), 0);
+  let targetRowCount = Math.max(extraction.rows.length, maxOcrRowNum);
   const existingRowByRowNum = new Map<number, GeminiExtractionRow>();
 
   if (geom.isLeftRosterPage) {
@@ -708,7 +709,7 @@ export function verifyRegisterCellsFromRgba(input: RgbaVerificationInput): Gemin
     }
 
     if (lastActiveRowIdx > 0) {
-      targetRowCount = lastActiveRowIdx;
+      targetRowCount = Math.max(lastActiveRowIdx, maxOcrRowNum);
     }
   }
 
@@ -719,9 +720,10 @@ export function verifyRegisterCellsFromRgba(input: RgbaVerificationInput): Gemin
   let leftPageLatticeOffset = 0;
   if (geom.isLeftRosterPage && geom.rows.length > 0 && sharedBands.length > 0) {
     const firstG = geom.rows[0];
+    const baseIdx = Math.max(0, Math.min(sharedBands.length - 2, firstG.rowNumber - 1));
     const targetMidY = firstG.yCenterAtZeroX * sy + slope * leftMidX;
-    const b0 = getCellYRange(sharedBands[0], leftMidX);
-    const b1 = sharedBands[1] ? getCellYRange(sharedBands[1], leftMidX) : b0;
+    const b0 = getCellYRange(sharedBands[baseIdx], leftMidX);
+    const b1 = sharedBands[baseIdx + 1] ? getCellYRange(sharedBands[baseIdx + 1], leftMidX) : b0;
     const d0 = Math.abs(targetMidY - (b0.topY + b0.botY) * 0.5);
     const d1 = Math.abs(targetMidY - (b1.topY + b1.botY) * 0.5);
     if (d1 + scaledRowH * 0.25 < d0) {

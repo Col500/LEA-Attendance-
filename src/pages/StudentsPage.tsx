@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   Search,
   Plus,
@@ -16,10 +16,22 @@ import {
   Camera,
   Loader2,
   AlertTriangle,
-  Maximize2
+  Maximize2,
+  Crop,
+  ChevronLeft,
+  ChevronRight,
+  Wand2,
+  RotateCcw,
+  Eye
 } from 'lucide-react';
-import { ClassItem, Student } from '../types/attendance';
-import { preprocessRegisterImage } from '../services/imagePreprocessing';
+import { ClassItem, NormalizedCropBox, Student } from '../types/attendance';
+import {
+  MIN_RECOMMENDED_SHORT_SIDE_PX,
+  preprocessRegisterImage,
+  PreprocessedImageResult
+} from '../services/imagePreprocessing';
+import { RegisterImageCropperModal } from '../components/RegisterImageCropperModal';
+import { LiveCameraViewfinderModal } from '../components/LiveCameraViewfinderModal';
 
 interface ExtractedRosterDraftRow {
   localId: string;
@@ -27,7 +39,12 @@ interface ExtractedRosterDraftRow {
   studentNumber: string;
   fullName: string;
   admissionNumber: string;
+  originalOcrName?: string;
+  aiCorrected?: boolean;
+  aiCorrectionNote?: string;
 }
+
+type EditableExtractedField = 'studentNumber' | 'fullName' | 'admissionNumber';
 
 interface StudentsPageProps {
   students: Student[];
@@ -83,7 +100,11 @@ export const StudentsPage: React.FC<StudentsPageProps> = ({
   const [bulkClassId, setBulkClassId] = useState('');
   const [bulkNewClassName, setBulkNewClassName] = useState('');
   const [bulkNewClassTeacher, setBulkNewClassTeacher] = useState('');
+  const [bulkRawSourceUrl, setBulkRawSourceUrl] = useState<string | null>(null);
+  const [bulkRawDimensions, setBulkRawDimensions] = useState<{ width: number; height: number } | null>(null);
   const [bulkPreviewUrl, setBulkPreviewUrl] = useState<string | null>(null);
+  const [bulkCropBox, setBulkCropBox] = useState<NormalizedCropBox | null>(null);
+  const [bulkPreprocessMeta, setBulkPreprocessMeta] = useState<PreprocessedImageResult | null>(null);
   const [bulkImageMeta, setBulkImageMeta] = useState<{
     fileName: string;
     width: number;
@@ -93,14 +114,29 @@ export const StudentsPage: React.FC<StudentsPageProps> = ({
   const [bulkImageSource, setBulkImageSource] = useState<'camera' | 'gallery' | null>(null);
   const [bulkHasExtracted, setBulkHasExtracted] = useState(false);
   const [bulkIsFullscreenPreview, setBulkIsFullscreenPreview] = useState(false);
+  const [bulkIsCropModalOpen, setBulkIsCropModalOpen] = useState(false);
+  const [bulkIsLiveCameraOpen, setBulkIsLiveCameraOpen] = useState(false);
+  const [isDraggingBulk, setIsDraggingBulk] = useState(false);
   const [isExtractingRoster, setIsExtractingRoster] = useState(false);
+  const [isCorrectingNames, setIsCorrectingNames] = useState(false);
   const [bulkExtractError, setBulkExtractError] = useState<string | null>(null);
+  const [bulkAiNotice, setBulkAiNotice] = useState<string | null>(null);
+  const [bulkRawOcrText, setBulkRawOcrText] = useState<string>('');
   const [bulkRows, setBulkRows] = useState<ExtractedRosterDraftRow[]>([]);
   const [bulkDetectedClass, setBulkDetectedClass] = useState<string | null>(null);
   const [isSavingBulk, setIsSavingBulk] = useState(false);
-  const bulkFileInputRef = React.useRef<HTMLInputElement>(null);
-  const bulkCameraInputRef = React.useRef<HTMLInputElement>(null);
-  const bulkAbortRef = React.useRef<AbortController | null>(null);
+  const [fullscreenEditTarget, setFullscreenEditTarget] = useState<{
+    localId: string;
+    field: EditableExtractedField;
+  } | null>(null);
+  const [fullscreenShowPhotoRef, setFullscreenShowPhotoRef] = useState(false);
+
+  const bulkFileInputRef = useRef<HTMLInputElement>(null);
+  const bulkCameraInputRef = useRef<HTMLInputElement>(null);
+  const bulkAbortRef = useRef<AbortController | null>(null);
+  const fullscreenRowNumInputRef = useRef<HTMLInputElement>(null);
+  const fullscreenNameInputRef = useRef<HTMLInputElement>(null);
+  const fullscreenAdmInputRef = useRef<HTMLInputElement>(null);
 
   // Add/Edit Student Form States
   const [formFullName, setFormFullName] = useState('');
@@ -362,6 +398,22 @@ export const StudentsPage: React.FC<StudentsPageProps> = ({
     }
   };
 
+  // Focus the tapped extracted field inside the Fullscreen Field Editor
+  useEffect(() => {
+    if (!fullscreenEditTarget) return;
+    const timer = window.setTimeout(() => {
+      if (fullscreenEditTarget.field === 'studentNumber') {
+        fullscreenRowNumInputRef.current?.focus();
+        fullscreenRowNumInputRef.current?.select();
+      } else if (fullscreenEditTarget.field === 'admissionNumber') {
+        fullscreenAdmInputRef.current?.focus();
+      } else {
+        fullscreenNameInputRef.current?.focus();
+      }
+    }, 50);
+    return () => window.clearTimeout(timer);
+  }, [fullscreenEditTarget]);
+
   // Bulk Scan Roster Enrollment handlers
   const handleOpenBulkScanModal = () => {
     if (bulkAbortRef.current) {
@@ -376,16 +428,28 @@ export const StudentsPage: React.FC<StudentsPageProps> = ({
     setBulkClassId(defaultExisting);
     setBulkNewClassName('');
     setBulkNewClassTeacher('');
+    setBulkRawSourceUrl(null);
+    setBulkRawDimensions(null);
     setBulkPreviewUrl(null);
+    setBulkCropBox(null);
+    setBulkPreprocessMeta(null);
     setBulkImageMeta(null);
     setBulkImageSource(null);
     setBulkHasExtracted(false);
     setBulkIsFullscreenPreview(false);
+    setBulkIsCropModalOpen(false);
+    setBulkIsLiveCameraOpen(false);
+    setIsDraggingBulk(false);
     setIsExtractingRoster(false);
+    setIsCorrectingNames(false);
     setBulkExtractError(null);
+    setBulkAiNotice(null);
+    setBulkRawOcrText('');
     setBulkRows([]);
     setBulkDetectedClass(null);
     setIsSavingBulk(false);
+    setFullscreenEditTarget(null);
+    setFullscreenShowPhotoRef(false);
     setShowBulkScanModal(true);
   };
 
@@ -395,7 +459,11 @@ export const StudentsPage: React.FC<StudentsPageProps> = ({
       bulkAbortRef.current = null;
     }
     setIsExtractingRoster(false);
+    setIsCorrectingNames(false);
     setBulkIsFullscreenPreview(false);
+    setBulkIsCropModalOpen(false);
+    setBulkIsLiveCameraOpen(false);
+    setFullscreenEditTarget(null);
     setShowBulkScanModal(false);
   };
 
@@ -409,13 +477,19 @@ export const StudentsPage: React.FC<StudentsPageProps> = ({
     setIsExtractingRoster(true);
     setBulkHasExtracted(true);
     setBulkExtractError(null);
+    setBulkAiNotice(null);
     setBulkRows([]);
+    setFullscreenEditTarget(null);
 
     try {
       const response = await fetch('/api/extract-roster', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image: imageDataUrl, model: 'google-cloud-vision' }),
+        body: JSON.stringify({
+          image: imageDataUrl,
+          model: 'google-cloud-vision',
+          applyAiCorrection: true
+        }),
         signal: controller.signal
       });
       const json = await response.json();
@@ -423,13 +497,15 @@ export const StudentsPage: React.FC<StudentsPageProps> = ({
         throw new Error(json.error || 'Could not extract student roster via Google Cloud Vision.');
       }
 
-      const detectedName = typeof json.classDetected === 'string' && json.classDetected.trim()
-        ? json.classDetected.trim()
-        : null;
+      const detectedName =
+        typeof json.classDetected === 'string' && json.classDetected.trim()
+          ? json.classDetected.trim()
+          : null;
       setBulkDetectedClass(detectedName);
       if (detectedName) {
         setBulkNewClassName((prev) => (prev.trim() ? prev : detectedName));
       }
+      setBulkRawOcrText(typeof json.rawText === 'string' ? json.rawText : '');
 
       const rawList = Array.isArray(json.students) ? json.students : [];
       const mappedRows: ExtractedRosterDraftRow[] = rawList.map((item: any, idx: number) => ({
@@ -441,12 +517,28 @@ export const StudentsPage: React.FC<StudentsPageProps> = ({
             : idx + 1
         ),
         fullName: String(item.fullName || '').trim(),
-        admissionNumber: String(item.admissionNumber || '').trim()
+        admissionNumber: String(item.admissionNumber || '').trim(),
+        originalOcrName: item.originalOcrName ? String(item.originalOcrName).trim() : String(item.fullName || '').trim(),
+        aiCorrected: Boolean(item.aiCorrected),
+        aiCorrectionNote: typeof item.aiCorrectionNote === 'string' ? item.aiCorrectionNote : undefined
       }));
 
       setBulkRows(mappedRows);
+      if (json.aiCorrectionStatus === 'applied') {
+        const count = Number(json.aiCorrectedCount || 0);
+        setBulkAiNotice(
+          count > 0
+            ? `AI Nigerian-context check refined ${count} pupil ${count === 1 ? 'name' : 'names'} to closest spelling.`
+            : 'AI Nigerian-context check verified all extracted names.'
+        );
+      } else if (json.aiCorrectionStatus === 'error' && json.aiCorrectionMessage) {
+        setBulkAiNotice(`OCR completed, but AI name check could not run: ${json.aiCorrectionMessage}`);
+      }
+
       if (mappedRows.length === 0) {
-        setBulkExtractError('No student names were detected. Crop closer or upload a clearer photo of the names column.');
+        setBulkExtractError(
+          'No student names were detected. Crop closer to the names column or upload a clearer photograph.'
+        );
       }
     } catch (err: any) {
       if (err?.name === 'AbortError') {
@@ -461,6 +553,122 @@ export const StudentsPage: React.FC<StudentsPageProps> = ({
     }
   };
 
+  const handleRunAiNameCorrection = async () => {
+    if (bulkRows.length === 0 || isCorrectingNames) return;
+    setIsCorrectingNames(true);
+    setBulkExtractError(null);
+    setBulkAiNotice(null);
+
+    try {
+      const payloadRows = bulkRows
+        .map((r, idx) => ({
+          studentNumber:
+            Number.isFinite(Number(r.studentNumber)) && Number(r.studentNumber) > 0
+              ? Number(r.studentNumber)
+              : idx + 1,
+          fullName: r.fullName.trim(),
+          admissionNumber: r.admissionNumber.trim() || undefined,
+          originalOcrName: r.originalOcrName || r.fullName.trim()
+        }))
+        .filter((r) => r.fullName.length > 0);
+
+      const response = await fetch('/api/correct-roster-names', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          students: payloadRows,
+          rawText: bulkRawOcrText,
+          image: bulkPreviewUrl
+        })
+      });
+      const json = await response.json();
+      if (!response.ok || !json.ok) {
+        throw new Error(json.error || 'AI Nigerian-context name correction failed.');
+      }
+
+      const returned = Array.isArray(json.students) ? json.students : [];
+      const byRowNum = new Map<number, any>();
+      returned.forEach((item: any) => {
+        if (Number.isFinite(Number(item?.studentNumber))) {
+          byRowNum.set(Number(item.studentNumber), item);
+        }
+      });
+
+      setBulkRows((prev) =>
+        prev.map((row, idx) => {
+          const sn =
+            Number.isFinite(Number(row.studentNumber)) && Number(row.studentNumber) > 0
+              ? Number(row.studentNumber)
+              : idx + 1;
+          const match = byRowNum.get(sn);
+          if (!match) return row;
+          return {
+            ...row,
+            fullName: String(match.fullName || row.fullName).trim(),
+            originalOcrName: match.originalOcrName || row.originalOcrName || row.fullName,
+            aiCorrected: Boolean(match.aiCorrected),
+            aiCorrectionNote:
+              typeof match.aiCorrectionNote === 'string'
+                ? match.aiCorrectionNote
+                : row.aiCorrectionNote
+          };
+        })
+      );
+
+      const count = Number(json.correctedCount || 0);
+      setBulkAiNotice(
+        count > 0
+          ? `AI Nigerian-context check updated ${count} pupil ${count === 1 ? 'name' : 'names'}.`
+          : 'AI Nigerian-context check reviewed all names and found no spelling issues.'
+      );
+    } catch (err: any) {
+      setBulkExtractError(err?.message || 'Unable to run AI Nigerian-context name check.');
+    } finally {
+      setIsCorrectingNames(false);
+    }
+  };
+
+  const applyBulkSourceCapture = async (
+    source: File | string,
+    meta: { fileName: string; sourceType: 'camera' | 'gallery'; autoExtract: boolean; preferredMimeType?: string }
+  ) => {
+    setBulkExtractError(null);
+    setBulkAiNotice(null);
+
+    try {
+      const pre = await preprocessRegisterImage({
+        source,
+        rotation: 0,
+        cropBox: null,
+        maxDimension: 1800,
+        preferredMimeType: meta.preferredMimeType
+      });
+      setBulkRawSourceUrl(pre.dataUrl);
+      setBulkRawDimensions({ width: pre.outputWidth, height: pre.outputHeight });
+      setBulkPreviewUrl(pre.dataUrl);
+      setBulkCropBox(null);
+      setBulkPreprocessMeta(pre);
+      setBulkImageSource(meta.sourceType);
+      setBulkHasExtracted(false);
+      setBulkRows([]);
+      setBulkDetectedClass(null);
+      setBulkRawOcrText('');
+      setFullscreenEditTarget(null);
+      setBulkImageMeta({
+        fileName: meta.fileName,
+        width: pre.outputWidth,
+        height: pre.outputHeight,
+        sizeLabel: `${(pre.estimatedBytes / (1024 * 1024)).toFixed(2)} MB`
+      });
+
+      if (meta.autoExtract) {
+        void runRosterExtraction(pre.dataUrl);
+      }
+    } catch (err: any) {
+      setBulkExtractError(err?.message || 'Unable to prepare photograph for extraction.');
+    }
+  };
+
   const handleBulkRosterFileSelected = async (
     file: File,
     options: { source: 'camera' | 'gallery'; autoExtract: boolean } = { source: 'gallery', autoExtract: false }
@@ -471,33 +679,81 @@ export const StudentsPage: React.FC<StudentsPageProps> = ({
       setBulkExtractError('Unsupported image format. Choose a JPG, PNG, or WebP photograph.');
       return;
     }
+    if (file.size / (1024 * 1024) > 15) {
+      setBulkExtractError('File size exceeds the 15 MB limit. Please select a smaller photograph.');
+      return;
+    }
+
+    await applyBulkSourceCapture(file, {
+      fileName: file.name,
+      sourceType: options.source,
+      autoExtract: options.autoExtract,
+      preferredMimeType: file.type
+    });
+  };
+
+  const handleBulkLiveCameraCapture = (
+    dataUrl: string,
+    _dims: { width: number; height: number }
+  ) => {
+    const timestamp = new Date().toISOString().slice(0, 10);
+    const timeStr = new Date().toTimeString().slice(0, 5).replace(':', '');
+    void applyBulkSourceCapture(dataUrl, {
+      fileName: `ENROLL_CAMERA_${timestamp}_${timeStr}.jpg`,
+      sourceType: 'camera',
+      autoExtract: true,
+      preferredMimeType: 'image/jpeg'
+    });
+  };
+
+  const handleBulkTakePhotoAction = () => {
+    const isMobileTouch =
+      typeof window !== 'undefined' &&
+      (window.matchMedia?.('(pointer: coarse)')?.matches ||
+        (navigator.maxTouchPoints > 0 && window.innerWidth < 768));
+
+    if (isMobileTouch && bulkCameraInputRef.current) {
+      bulkCameraInputRef.current.click();
+    } else {
+      setBulkIsLiveCameraOpen(true);
+    }
+  };
+
+  const handleApplyBulkCrop = async (nextCrop: NormalizedCropBox | null) => {
+    if (!bulkRawSourceUrl) return;
+    setBulkExtractError(null);
+    setBulkCropBox(nextCrop);
 
     try {
       const pre = await preprocessRegisterImage({
-        source: file,
+        source: bulkRawSourceUrl,
         rotation: 0,
-        maxDimension: 1800,
-        preferredMimeType: file.type
+        cropBox: nextCrop,
+        maxDimension: 1800
       });
       setBulkPreviewUrl(pre.dataUrl);
-      setBulkImageSource(options.source);
-      setBulkHasExtracted(false);
-      setBulkRows([]);
-      setBulkDetectedClass(null);
-      setBulkImageMeta({
-        fileName: file.name,
-        width: pre.outputWidth,
-        height: pre.outputHeight,
-        sizeLabel: `${(pre.estimatedBytes / (1024 * 1024)).toFixed(2)} MB`
-      });
+      setBulkPreprocessMeta(pre);
+      setBulkImageMeta((prev) =>
+        prev
+          ? {
+              ...prev,
+              width: pre.outputWidth,
+              height: pre.outputHeight,
+              sizeLabel: `${(pre.estimatedBytes / (1024 * 1024)).toFixed(2)} MB`
+            }
+          : null
+      );
 
-      if (options.autoExtract) {
-        // Immediately auto-initiate extraction after camera capture
+      if (bulkHasExtracted) {
         void runRosterExtraction(pre.dataUrl);
       }
     } catch (err: any) {
-      setBulkExtractError(err?.message || 'Unable to prepare photograph for extraction.');
+      setBulkExtractError(err?.message || 'Unable to apply crop to register photograph.');
     }
+  };
+
+  const handleResetBulkCrop = () => {
+    void handleApplyBulkCrop(null);
   };
 
   const handleClearBulkPreview = () => {
@@ -506,19 +762,30 @@ export const StudentsPage: React.FC<StudentsPageProps> = ({
       bulkAbortRef.current = null;
     }
     setIsExtractingRoster(false);
+    setIsCorrectingNames(false);
+    setBulkRawSourceUrl(null);
+    setBulkRawDimensions(null);
     setBulkPreviewUrl(null);
+    setBulkCropBox(null);
+    setBulkPreprocessMeta(null);
     setBulkImageMeta(null);
     setBulkImageSource(null);
     setBulkHasExtracted(false);
     setBulkRows([]);
     setBulkDetectedClass(null);
     setBulkExtractError(null);
+    setBulkAiNotice(null);
+    setBulkRawOcrText('');
     setBulkIsFullscreenPreview(false);
+    setBulkIsCropModalOpen(false);
+    setFullscreenEditTarget(null);
+    if (bulkFileInputRef.current) bulkFileInputRef.current.value = '';
+    if (bulkCameraInputRef.current) bulkCameraInputRef.current.value = '';
   };
 
   const handleRetakeBulkPhoto = () => {
     handleClearBulkPreview();
-    bulkCameraInputRef.current?.click();
+    handleBulkTakePhotoAction();
   };
 
   const handleCancelRosterExtraction = () => {
@@ -1541,28 +1808,29 @@ export const StudentsPage: React.FC<StudentsPageProps> = ({
 
       {/* BULK SCAN REGISTER TO ENROLL MODAL */}
       {showBulkScanModal && (
-        <div className="fixed inset-0 z-50 bg-slate-950/65 backdrop-blur-xs flex items-center justify-center p-3 sm:p-5">
-          <div className="bg-white rounded-xl max-w-3xl w-full max-h-[92vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
-            <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between bg-slate-50">
-              <div>
+        <div className="fixed inset-0 z-50 bg-slate-950/65 backdrop-blur-xs flex items-center justify-center p-0 sm:p-4">
+          <div className="bg-white rounded-none sm:rounded-xl max-w-3xl w-full h-dvh sm:h-auto sm:max-h-[92vh] flex flex-col shadow-2xl border-0 sm:border sm:border-slate-200 overflow-hidden">
+            <div className="px-4 sm:px-5 py-3.5 sm:py-4 border-b border-slate-200 flex items-center justify-between bg-slate-50 shrink-0">
+              <div className="min-w-0">
                 <h3 className="font-bold text-slate-900 text-base flex items-center gap-2">
-                  <ScanLine className="w-4 h-4 text-emerald-700" />
-                  <span>Bulk Enroll Students from Register Scan</span>
+                  <ScanLine className="w-4 h-4 text-emerald-700 shrink-0" />
+                  <span className="truncate">Bulk Enroll Students from Register Scan</span>
                 </h3>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Upload or capture the student names/details section once to enroll the whole class.
+                  Capture or upload the student details page, crop tightly if needed, and verify names.
                 </p>
               </div>
               <button
                 type="button"
                 onClick={handleCloseBulkScanModal}
-                className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg cursor-pointer"
+                className="p-2 text-slate-400 hover:text-slate-700 rounded-lg cursor-pointer shrink-0"
+                aria-label="Close enrollment scan"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <div className="p-5 overflow-y-auto space-y-4 text-xs flex-1">
+            <div className="p-4 sm:p-5 overflow-y-auto space-y-4 text-xs flex-1">
               {/* Target Class Selector or Inline Create */}
               <div className="p-3.5 rounded-lg bg-slate-50 border border-slate-200 space-y-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1674,75 +1942,134 @@ export const StudentsPage: React.FC<StudentsPageProps> = ({
                 className="hidden"
               />
 
-              {/* Capture / Preview Strip */}
+              {/* Capture / Preview Strip (Full Register Scan Parity) */}
               {!bulkPreviewUrl ? (
-                <div className="border-2 border-dashed border-slate-300 rounded-lg p-6 text-center bg-slate-50/70 space-y-3">
-                  <div className="font-semibold text-slate-800">
-                    Select or photograph the student details page of the register
+                <div
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    setIsDraggingBulk(true);
+                  }}
+                  onDragLeave={() => setIsDraggingBulk(false)}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    setIsDraggingBulk(false);
+                    const file = e.dataTransfer.files?.[0];
+                    if (file) {
+                      void handleBulkRosterFileSelected(file, { source: 'gallery', autoExtract: false });
+                    }
+                  }}
+                  className={`border-2 border-dashed rounded-xl p-5 sm:p-7 text-center space-y-3.5 transition-all ${
+                    isDraggingBulk
+                      ? 'border-emerald-600 bg-emerald-50/60'
+                      : 'border-slate-300 hover:border-slate-400 bg-slate-50/70'
+                  }`}
+                >
+                  <div className="w-12 h-12 rounded-full bg-emerald-100 text-emerald-800 flex items-center justify-center mx-auto shadow-2xs">
+                    <Camera className="w-6 h-6 text-emerald-700" />
                   </div>
-                  <p className="text-[11px] text-slate-500">
-                    Gallery uploads show a preview first before uploading; camera captures auto-scan immediately.
-                  </p>
-                  <div className="flex flex-wrap items-center justify-center gap-2">
+                  <div>
+                    <div className="font-bold text-slate-900 text-sm">
+                      Capture or upload student roster page
+                    </div>
+                    <p className="text-xs text-slate-500 mt-1">
+                      Camera captures scan automatically; gallery uploads open for cropping first.
+                    </p>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-w-md mx-auto pt-1">
                     <button
                       type="button"
-                      onClick={() => bulkCameraInputRef.current?.click()}
-                      className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-md bg-emerald-700 hover:bg-emerald-800 text-white font-semibold cursor-pointer"
+                      onClick={handleBulkTakePhotoAction}
+                      className="w-full min-h-[44px] inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white font-semibold text-xs sm:text-sm shadow-xs cursor-pointer"
                     >
-                      <Camera className="w-4 h-4" />
-                      <span>Capture Photo</span>
+                      <Camera className="w-4 h-4 shrink-0" />
+                      <span>Take Photo</span>
                     </button>
                     <button
                       type="button"
                       onClick={() => bulkFileInputRef.current?.click()}
-                      className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-md border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-semibold cursor-pointer"
+                      className="w-full min-h-[44px] inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-semibold text-xs sm:text-sm shadow-2xs cursor-pointer"
                     >
-                      <UploadCloud className="w-4 h-4 text-slate-500" />
-                      <span>Upload Image</span>
+                      <UploadCloud className="w-4 h-4 text-slate-500 shrink-0" />
+                      <span>Upload from Gallery</span>
                     </button>
                   </div>
                 </div>
               ) : !bulkHasExtracted && !isExtractingRoster ? (
-                /* 9:16 Portrait Image Preview Before Uploading */
-                <div className="space-y-3 p-3 rounded-lg border border-slate-200 bg-slate-50">
-                  <div className="relative w-full max-w-[260px] mx-auto aspect-9/16 max-h-[56vh] rounded-lg overflow-hidden border border-slate-300 bg-slate-950 flex items-center justify-center">
+                /* 9:16 Portrait Preview with Crop, Fullscreen, Retake, Delete, Gallery */
+                <div className="space-y-3 p-3 rounded-xl border border-slate-200 bg-slate-50">
+                  <div className="relative w-full max-w-[270px] mx-auto aspect-9/16 max-h-[56vh] rounded-xl overflow-hidden border border-slate-300 bg-slate-950 flex items-center justify-center">
                     <img
                       src={bulkPreviewUrl}
                       alt="Preview of student register before upload"
                       className="w-full h-full object-contain"
                     />
-                    <div className="absolute top-2 right-2 flex items-center gap-1 bg-slate-900/85 p-1 rounded-md border border-slate-700">
+                    <div className="absolute top-2.5 right-2.5 flex items-center gap-1 bg-slate-900/85 p-1 rounded-lg backdrop-blur-xs border border-slate-700">
+                      <button
+                        type="button"
+                        onClick={() => setBulkIsCropModalOpen(true)}
+                        className="p-2 rounded-md hover:bg-slate-800 text-emerald-300 cursor-pointer"
+                        title="Crop photo"
+                        aria-label="Crop photo"
+                      >
+                        <Crop className="w-4 h-4" />
+                      </button>
                       <button
                         type="button"
                         onClick={() => setBulkIsFullscreenPreview(true)}
-                        className="p-1.5 rounded hover:bg-slate-800 text-white cursor-pointer"
-                        title="Inspect full image"
+                        className="p-2 rounded-md hover:bg-slate-800 text-white cursor-pointer"
+                        title="Fullscreen preview"
+                        aria-label="Fullscreen preview"
                       >
-                        <Maximize2 className="w-3.5 h-3.5" />
+                        <Maximize2 className="w-4 h-4" />
                       </button>
                       <button
                         type="button"
                         onClick={handleClearBulkPreview}
-                        className="p-1.5 rounded hover:bg-rose-900/80 text-rose-300 hover:text-white cursor-pointer"
+                        className="p-2 rounded-md hover:bg-rose-900/80 text-rose-300 hover:text-white cursor-pointer"
                         title="Delete photo"
+                        aria-label="Delete photo"
                       >
-                        <Trash2 className="w-3.5 h-3.5" />
+                        <Trash2 className="w-4 h-4" />
                       </button>
                     </div>
+                    {bulkCropBox && (
+                      <div className="absolute bottom-2.5 left-2.5 bg-slate-900/85 text-white text-[11px] font-medium px-2 py-0.5 rounded border border-slate-700">
+                        Cropped
+                      </div>
+                    )}
                   </div>
 
-                  {bulkImageMeta && (
-                    <div className="text-[11px] text-slate-500 text-center truncate">
-                      {bulkImageMeta.fileName} · {bulkImageMeta.sizeLabel}
+                  {/* Mobile-Friendly Crop + Camera + Gallery Action Row */}
+                  <div className="flex flex-wrap items-center justify-between gap-2 p-2.5 bg-white rounded-xl border border-slate-200 text-xs">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <button
+                        type="button"
+                        onClick={() => setBulkIsCropModalOpen(true)}
+                        className={`min-h-[38px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border font-semibold cursor-pointer ${
+                          bulkCropBox
+                            ? 'bg-emerald-50 border-emerald-400 text-emerald-900'
+                            : 'bg-white hover:bg-slate-100 border-slate-300 text-slate-700'
+                        }`}
+                      >
+                        <Crop className="w-3.5 h-3.5 text-emerald-700" />
+                        <span>{bulkCropBox ? 'Edit Crop' : 'Crop'}</span>
+                      </button>
+                      {bulkCropBox && (
+                        <button
+                          type="button"
+                          onClick={handleResetBulkCrop}
+                          className="text-[11px] text-slate-600 hover:text-slate-900 underline px-1.5 cursor-pointer"
+                        >
+                          Reset Crop
+                        </button>
+                      )}
                     </div>
-                  )}
 
-                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <button
                         type="button"
                         onClick={handleRetakeBulkPhoto}
-                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md border border-emerald-300 bg-white hover:bg-emerald-50 text-emerald-800 font-semibold cursor-pointer"
+                        className="min-h-[38px] inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-emerald-300 bg-white hover:bg-emerald-50 text-emerald-800 font-semibold cursor-pointer"
                       >
                         <Camera className="w-3.5 h-3.5" />
                         <span>Retake</span>
@@ -1750,7 +2077,7 @@ export const StudentsPage: React.FC<StudentsPageProps> = ({
                       <button
                         type="button"
                         onClick={handleClearBulkPreview}
-                        className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md border border-rose-200 bg-white hover:bg-rose-50 text-rose-700 font-semibold cursor-pointer"
+                        className="min-h-[38px] inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-rose-200 bg-white hover:bg-rose-50 text-rose-700 font-semibold cursor-pointer"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                         <span>Delete</span>
@@ -1758,115 +2085,135 @@ export const StudentsPage: React.FC<StudentsPageProps> = ({
                       <button
                         type="button"
                         onClick={() => bulkFileInputRef.current?.click()}
-                        className="px-3 py-1.5 rounded-md border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 font-semibold cursor-pointer"
+                        className="min-h-[38px] inline-flex items-center gap-1 px-3 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 font-semibold cursor-pointer"
                       >
-                        Gallery
+                        <UploadCloud className="w-3.5 h-3.5 text-slate-500" />
+                        <span>Gallery</span>
                       </button>
                     </div>
-
-                    <button
-                      type="button"
-                      onClick={() => void runRosterExtraction(bulkPreviewUrl)}
-                      className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-md bg-emerald-700 hover:bg-emerald-800 text-white font-bold shadow-xs cursor-pointer"
-                    >
-                      <ScanLine className="w-4 h-4" />
-                      <span>Extract Roster</span>
-                    </button>
                   </div>
+
+                  {bulkPreprocessMeta?.isLowResolution && (
+                    <div className="p-2.5 rounded-lg bg-amber-50 border border-amber-300 text-[11px] text-amber-950 flex items-start gap-2">
+                      <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+                      <span>
+                        Image resolution ({bulkPreprocessMeta.outputWidth}×{bulkPreprocessMeta.outputHeight}px) is below {MIN_RECOMMENDED_SHORT_SIDE_PX}px on its short edge. Handwriting may be blurry — consider retaking closer or widening the crop.
+                      </span>
+                    </div>
+                  )}
+
+                  {bulkImageMeta && (
+                    <div className="text-[11px] text-slate-500 text-center truncate tabular-nums">
+                      {bulkImageMeta.fileName} · {bulkImageMeta.width}×{bulkImageMeta.height}px · {bulkImageMeta.sizeLabel}
+                    </div>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => void runRosterExtraction(bulkPreviewUrl)}
+                    className="w-full min-h-[44px] inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white font-bold text-sm shadow-xs cursor-pointer"
+                  >
+                    <ScanLine className="w-4 h-4" />
+                    <span>Extract Roster</span>
+                  </button>
                 </div>
               ) : (
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 rounded-lg border border-slate-200 bg-slate-50">
-                  <div className="flex items-center gap-3 min-w-0">
-                    <button
-                      type="button"
-                      onClick={() => setBulkIsFullscreenPreview(true)}
-                      className="shrink-0 cursor-pointer rounded border border-slate-300 overflow-hidden hover:opacity-90"
-                      title="Inspect photo"
-                    >
-                      <img
-                        src={bulkPreviewUrl}
-                        alt="Scanned student register"
-                        className="w-12 h-20 object-cover bg-slate-900"
-                      />
-                    </button>
-                    <div className="min-w-0">
-                      <div className="font-semibold text-slate-800">
-                        {bulkImageSource === 'gallery' ? 'Gallery photo loaded' : 'Register photo loaded'}
-                      </div>
-                      <div className="text-[11px] text-slate-500">
-                        {isExtractingRoster
-                          ? 'Extracting names and admission numbers...'
-                          : `${bulkRows.length} student row(s) detected`}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2 shrink-0">
-                    {isExtractingRoster ? (
+                <div className="space-y-2.5">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 rounded-xl border border-slate-200 bg-slate-50">
+                    <div className="flex items-center gap-3 min-w-0">
                       <button
                         type="button"
-                        onClick={handleCancelRosterExtraction}
-                        className="px-3 py-1.5 rounded-md bg-rose-50 border border-rose-300 text-rose-800 font-semibold hover:bg-rose-100 cursor-pointer"
+                        onClick={() => setBulkIsFullscreenPreview(true)}
+                        className="shrink-0 cursor-pointer rounded border border-slate-300 overflow-hidden hover:opacity-90"
+                        title="Inspect photo fullscreen"
                       >
-                        Cancel
+                        <img
+                          src={bulkPreviewUrl}
+                          alt="Scanned student register"
+                          className="w-12 h-20 object-cover bg-slate-900"
+                        />
                       </button>
-                    ) : (
-                      <>
-                        <button
-                          type="button"
-                          onClick={() => void runRosterExtraction(bulkPreviewUrl)}
-                          className="px-3 py-1.5 rounded-md border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 font-semibold cursor-pointer"
-                        >
-                          Re-Scan
-                        </button>
-                        <button
-                          type="button"
-                          onClick={handleRetakeBulkPhoto}
-                          className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md border border-emerald-300 bg-white hover:bg-emerald-50 text-emerald-800 font-semibold cursor-pointer"
-                        >
-                          <Camera className="w-3.5 h-3.5" />
-                          <span>Retake</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={handleClearBulkPreview}
-                          className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md border border-rose-200 bg-white hover:bg-rose-50 text-rose-700 font-semibold cursor-pointer"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                          <span>Delete</span>
-                        </button>
-                      </>
-                    )}
-                  </div>
-                </div>
-              )}
+                      <div className="min-w-0">
+                        <div className="font-semibold text-slate-800 flex items-center gap-1.5 flex-wrap">
+                          <span>{bulkImageSource === 'gallery' ? 'Gallery photo loaded' : 'Register photo loaded'}</span>
+                          {bulkCropBox && (
+                            <span className="text-[10px] font-semibold text-emerald-800">· Cropped</span>
+                          )}
+                        </div>
+                        <div className="text-[11px] text-slate-500 mt-0.5 tabular-nums">
+                          {isExtractingRoster
+                            ? 'Extracting student rows & checking names...'
+                            : `${bulkRows.length} student row(s) detected`}
+                          {bulkImageMeta ? ` · ${bulkImageMeta.width}×${bulkImageMeta.height}px` : ''}
+                        </div>
+                      </div>
+                    </div>
 
-              {bulkIsFullscreenPreview && bulkPreviewUrl && (
-                <div className="fixed inset-0 z-50 bg-slate-950/90 flex items-center justify-center p-4">
-                  <div className="relative max-w-4xl w-full max-h-[90vh] flex flex-col items-center">
-                    <button
-                      type="button"
-                      onClick={() => setBulkIsFullscreenPreview(false)}
-                      className="self-end mb-2 px-3 py-1.5 rounded-md bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold inline-flex items-center gap-1 cursor-pointer"
-                    >
-                      <X className="w-4 h-4" />
-                      <span>Close Preview</span>
-                    </button>
-                    <img
-                      src={bulkPreviewUrl}
-                      alt="Full size register preview"
-                      className="max-h-[82vh] max-w-full object-contain rounded-lg border border-slate-700 bg-slate-900"
-                    />
+                    <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                      {isExtractingRoster ? (
+                        <button
+                          type="button"
+                          onClick={handleCancelRosterExtraction}
+                          className="min-h-[38px] px-3 py-1.5 rounded-lg bg-rose-50 border border-rose-300 text-rose-800 font-semibold hover:bg-rose-100 cursor-pointer"
+                        >
+                          Cancel
+                        </button>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => setBulkIsCropModalOpen(true)}
+                            className="min-h-[38px] inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 font-semibold cursor-pointer"
+                          >
+                            <Crop className="w-3.5 h-3.5 text-emerald-700" />
+                            <span>{bulkCropBox ? 'Edit Crop' : 'Crop'}</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void runRosterExtraction(bulkPreviewUrl)}
+                            className="min-h-[38px] px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 font-semibold cursor-pointer"
+                          >
+                            Re-Scan
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleRetakeBulkPhoto}
+                            className="min-h-[38px] inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-emerald-300 bg-white hover:bg-emerald-50 text-emerald-800 font-semibold cursor-pointer"
+                          >
+                            <Camera className="w-3.5 h-3.5" />
+                            <span>Retake</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleClearBulkPreview}
+                            className="min-h-[38px] inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-rose-200 bg-white hover:bg-rose-50 text-rose-700 font-semibold cursor-pointer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span>Delete</span>
+                          </button>
+                        </>
+                      )}
+                    </div>
                   </div>
+
+                  {bulkPreprocessMeta?.isLowResolution && (
+                    <div className="p-2.5 rounded-lg bg-amber-50 border border-amber-300 text-[11px] text-amber-950 flex items-start gap-2">
+                      <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+                      <span>
+                        Image resolution ({bulkPreprocessMeta.outputWidth}×{bulkPreprocessMeta.outputHeight}px) is below {MIN_RECOMMENDED_SHORT_SIDE_PX}px on its short edge. Widen the crop or retake closer if names are blurry.
+                      </span>
+                    </div>
+                  )}
                 </div>
               )}
 
               {/* Extracting spinner */}
               {isExtractingRoster && (
-                <div className="p-4 rounded-lg bg-emerald-50 border border-emerald-200 flex items-center justify-between gap-3 text-emerald-950">
+                <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center justify-between gap-3 text-emerald-950">
                   <div className="flex items-center gap-2.5">
                     <Loader2 className="w-4 h-4 animate-spin text-emerald-700 shrink-0" />
                     <span className="font-semibold">
-                      Reading student roll numbers, names, and admission numbers...
+                      Reading student rows, names, and admission numbers...
                     </span>
                   </div>
                   <button
@@ -1879,6 +2226,14 @@ export const StudentsPage: React.FC<StudentsPageProps> = ({
                 </div>
               )}
 
+              {/* AI Notice */}
+              {bulkAiNotice && (
+                <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-950 text-xs flex items-start gap-2">
+                  <Wand2 className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5" />
+                  <span>{bulkAiNotice}</span>
+                </div>
+              )}
+
               {/* Error feedback */}
               {bulkExtractError && (
                 <div className="p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-900 flex items-start gap-2">
@@ -1887,41 +2242,199 @@ export const StudentsPage: React.FC<StudentsPageProps> = ({
                 </div>
               )}
 
-              {/* Extracted Student Preview Table */}
+              {/* Extracted Student Preview List (Tap any field to edit fullscreen) */}
               {bulkRows.length > 0 && (
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="font-bold text-slate-800">
-                      Extracted Students ({includedValidBulkRows.length} selected to enroll)
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setBulkRows((prev) => [
-                          ...prev,
-                          {
-                            localId: `manual-${Date.now()}`,
-                            include: true,
-                            studentNumber: String(prev.length + 1),
-                            fullName: '',
-                            admissionNumber: ''
-                          }
-                        ])
-                      }
-                      className="text-emerald-700 hover:underline font-semibold cursor-pointer"
-                    >
-                      + Add Row
-                    </button>
+                <div className="space-y-2.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <span className="font-bold text-slate-800 text-xs sm:text-sm">
+                        Extracted Students ({includedValidBulkRows.length} selected to enroll)
+                      </span>
+                      <p className="text-[11px] text-slate-500 mt-0.5">
+                        Tap any extracted field (Row #, Full Name, or Admission No.) to open and edit it in fullscreen.
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        disabled={isCorrectingNames || isExtractingRoster}
+                        onClick={() => void handleRunAiNameCorrection()}
+                        className="min-h-[36px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-emerald-300 bg-emerald-50 hover:bg-emerald-100 disabled:opacity-50 text-emerald-900 font-semibold cursor-pointer"
+                      >
+                        {isCorrectingNames ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-700" />
+                        ) : (
+                          <Wand2 className="w-3.5 h-3.5 text-emerald-700" />
+                        )}
+                        <span>{isCorrectingNames ? 'Checking Names...' : 'AI Correct Names'}</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const newLocalId = `manual-${Date.now()}`;
+                          const nextRowNum = String(bulkRows.length + 1);
+                          setBulkRows((prev) => [
+                            ...prev,
+                            {
+                              localId: newLocalId,
+                              include: true,
+                              studentNumber: nextRowNum,
+                              fullName: '',
+                              admissionNumber: ''
+                            }
+                          ]);
+                          setFullscreenEditTarget({ localId: newLocalId, field: 'fullName' });
+                        }}
+                        className="min-h-[36px] px-2.5 py-1.5 text-emerald-700 hover:bg-emerald-50 rounded-lg font-semibold cursor-pointer"
+                      >
+                        + Add Row
+                      </button>
+                    </div>
                   </div>
 
-                  <div className="border border-slate-200 rounded-lg overflow-hidden max-h-72 overflow-y-auto">
+                  {/* Mobile Card List (Tap any field to open Fullscreen Editor) */}
+                  <div className="md:hidden space-y-2.5">
+                    {bulkRows.map((row) => {
+                      const parsedSn = parseInt(row.studentNumber, 10);
+                      const hasSnConflict =
+                        bulkClassMode === 'existing' &&
+                        Number.isFinite(parsedSn) &&
+                        existingRollNumbersForBulkClass.has(parsedSn);
+
+                      return (
+                        <div
+                          key={row.localId}
+                          className={`rounded-xl border p-3 space-y-2.5 ${
+                            !row.include
+                              ? 'opacity-60 bg-slate-50 border-slate-200'
+                              : hasSnConflict
+                              ? 'bg-amber-50/40 border-amber-300'
+                              : 'bg-white border-slate-200'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <label className="inline-flex items-center gap-2 text-xs font-semibold text-slate-700 cursor-pointer min-h-[36px]">
+                              <input
+                                type="checkbox"
+                                checked={row.include}
+                                onChange={(e) =>
+                                  setBulkRows((prev) =>
+                                    prev.map((r) =>
+                                      r.localId === row.localId
+                                        ? { ...r, include: e.target.checked }
+                                        : r
+                                    )
+                                  )
+                                }
+                                className="w-4 h-4 accent-emerald-700"
+                              />
+                              <span>Enroll Pupil</span>
+                            </label>
+
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setBulkRows((prev) =>
+                                  prev.filter((r) => r.localId !== row.localId)
+                                )
+                              }
+                              className="min-h-[36px] min-w-[36px] inline-flex items-center justify-center rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 cursor-pointer"
+                              aria-label="Remove extracted row"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+
+                          <div className="grid grid-cols-12 gap-2">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setFullscreenEditTarget({
+                                  localId: row.localId,
+                                  field: 'studentNumber'
+                                })
+                              }
+                              className={`col-span-3 min-h-[48px] text-left px-2.5 py-2 rounded-lg border transition-colors cursor-pointer ${
+                                hasSnConflict
+                                  ? 'border-amber-400 bg-amber-50'
+                                  : 'border-slate-300 bg-slate-50 hover:border-emerald-500'
+                              }`}
+                            >
+                              <div className="text-[10px] font-semibold text-slate-500">Row #</div>
+                              <div className="text-sm font-bold text-slate-900 tabular-nums mt-0.5">
+                                {row.studentNumber || '—'}
+                              </div>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setFullscreenEditTarget({
+                                  localId: row.localId,
+                                  field: 'fullName'
+                                })
+                              }
+                              className="col-span-9 min-h-[48px] text-left px-3 py-2 rounded-lg border border-slate-300 bg-white hover:border-emerald-500 transition-colors cursor-pointer min-w-0"
+                            >
+                              <div className="flex items-center justify-between gap-1">
+                                <span className="text-[10px] font-semibold text-slate-500">
+                                  Full Name
+                                </span>
+                                <span className="text-[10px] font-semibold text-emerald-700">
+                                  Tap to edit
+                                </span>
+                              </div>
+                              <div className="text-sm font-bold text-slate-900 truncate mt-0.5">
+                                {row.fullName || 'Tap to enter name'}
+                              </div>
+                            </button>
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setFullscreenEditTarget({
+                                localId: row.localId,
+                                field: 'admissionNumber'
+                              })
+                            }
+                            className="w-full min-h-[44px] text-left px-3 py-2 rounded-lg border border-slate-200 bg-slate-50/70 hover:border-emerald-500 transition-colors flex items-center justify-between gap-2 cursor-pointer"
+                          >
+                            <span className="text-[11px] font-semibold text-slate-500">
+                              Admission No.
+                            </span>
+                            <span className="text-xs font-mono font-semibold text-slate-800 truncate">
+                              {row.admissionNumber || 'Tap to add (optional)'}
+                            </span>
+                          </button>
+
+                          {row.aiCorrected && row.originalOcrName && row.originalOcrName !== row.fullName && (
+                            <div className="text-[11px] text-emerald-800">
+                              AI refined from OCR: <span className="italic">"{row.originalOcrName}"</span>
+                            </div>
+                          )}
+
+                          {hasSnConflict && (
+                            <div className="text-[11px] text-amber-800 flex items-center gap-1">
+                              <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                              <span>Row #{parsedSn} already exists in this class</span>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Desktop & Tablet Table (Tap any field to open Fullscreen Editor) */}
+                  <div className="hidden md:block border border-slate-200 rounded-lg overflow-hidden max-h-80 overflow-y-auto">
                     <table className="w-full text-left text-xs">
-                      <thead className="bg-slate-100 border-b border-slate-200 text-slate-600 font-semibold sticky top-0">
+                      <thead className="bg-slate-100 border-b border-slate-200 text-slate-600 font-semibold sticky top-0 z-10">
                         <tr>
                           <th className="py-2 px-2.5 w-10 text-center">Use</th>
-                          <th className="py-2 px-2 w-16">S/N</th>
+                          <th className="py-2 px-2 w-20">Row #</th>
                           <th className="py-2 px-2">Full Name</th>
-                          <th className="py-2 px-2 w-36">Admission No.</th>
+                          <th className="py-2 px-2 w-40">Admission No.</th>
                           <th className="py-2 px-2 w-10"></th>
                         </tr>
                       </thead>
@@ -1935,7 +2448,7 @@ export const StudentsPage: React.FC<StudentsPageProps> = ({
 
                           return (
                             <tr key={row.localId} className={!row.include ? 'opacity-50 bg-slate-50' : ''}>
-                              <td className="py-1.5 px-2.5 text-center">
+                              <td className="py-2 px-2.5 text-center">
                                 <input
                                   type="checkbox"
                                   checked={row.include}
@@ -1950,73 +2463,70 @@ export const StudentsPage: React.FC<StudentsPageProps> = ({
                                   }
                                 />
                               </td>
-                              <td className="py-1.5 px-2">
-                                <input
-                                  type="number"
-                                  min="1"
-                                  value={row.studentNumber}
-                                  onChange={(e) =>
-                                    setBulkRows((prev) =>
-                                      prev.map((r) =>
-                                        r.localId === row.localId
-                                          ? { ...r, studentNumber: e.target.value }
-                                          : r
-                                      )
-                                    )
+                              <td className="py-2 px-2">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setFullscreenEditTarget({
+                                      localId: row.localId,
+                                      field: 'studentNumber'
+                                    })
                                   }
-                                  className={`w-14 px-2 py-1 border rounded ${
+                                  className={`w-16 px-2.5 py-1.5 border rounded text-left font-bold tabular-nums cursor-pointer transition-colors ${
                                     hasSnConflict
-                                      ? 'border-amber-400 bg-amber-50'
-                                      : 'border-slate-300'
+                                      ? 'border-amber-400 bg-amber-50 text-amber-950'
+                                      : 'border-slate-300 bg-white hover:border-emerald-500 text-slate-900'
                                   }`}
-                                  title={
-                                    hasSnConflict
-                                      ? 'This S/N already exists in the selected class'
-                                      : undefined
-                                  }
-                                />
+                                  title="Tap to edit Row # in fullscreen"
+                                >
+                                  {row.studentNumber || '—'}
+                                </button>
                               </td>
-                              <td className="py-1.5 px-2">
-                                <input
-                                  type="text"
-                                  value={row.fullName}
-                                  onChange={(e) =>
-                                    setBulkRows((prev) =>
-                                      prev.map((r) =>
-                                        r.localId === row.localId
-                                          ? { ...r, fullName: e.target.value }
-                                          : r
-                                      )
-                                    )
+                              <td className="py-2 px-2">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setFullscreenEditTarget({
+                                      localId: row.localId,
+                                      field: 'fullName'
+                                    })
                                   }
-                                  placeholder="Full Name"
-                                  className="w-full px-2 py-1 border border-slate-300 rounded"
-                                />
+                                  className="w-full px-2.5 py-1.5 border border-slate-300 bg-white hover:border-emerald-500 rounded text-left font-semibold text-slate-900 cursor-pointer transition-colors flex items-center justify-between gap-2"
+                                  title="Tap to edit Full Name in fullscreen"
+                                >
+                                  <span className="truncate">
+                                    {row.fullName || 'Tap to enter name'}
+                                  </span>
+                                  <Maximize2 className="w-3 h-3 text-slate-400 shrink-0" />
+                                </button>
+                                {row.aiCorrected && row.originalOcrName && row.originalOcrName !== row.fullName && (
+                                  <div className="text-[10px] text-emerald-800 mt-0.5">
+                                    AI refined from OCR: "{row.originalOcrName}"
+                                  </div>
+                                )}
                                 {hasSnConflict && (
                                   <div className="text-[10px] text-amber-800 flex items-center gap-1 mt-0.5">
                                     <AlertTriangle className="w-3 h-3 shrink-0" />
-                                    <span>S/N #{parsedSn} already exists in this class</span>
+                                    <span>Row #{parsedSn} already exists in this class</span>
                                   </div>
                                 )}
                               </td>
-                              <td className="py-1.5 px-2">
-                                <input
-                                  type="text"
-                                  value={row.admissionNumber}
-                                  onChange={(e) =>
-                                    setBulkRows((prev) =>
-                                      prev.map((r) =>
-                                        r.localId === row.localId
-                                          ? { ...r, admissionNumber: e.target.value }
-                                          : r
-                                      )
-                                    )
+                              <td className="py-2 px-2">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setFullscreenEditTarget({
+                                      localId: row.localId,
+                                      field: 'admissionNumber'
+                                    })
                                   }
-                                  placeholder="Optional"
-                                  className="w-full px-2 py-1 border border-slate-300 rounded font-mono text-[11px]"
-                                />
+                                  className="w-full px-2.5 py-1.5 border border-slate-300 bg-white hover:border-emerald-500 rounded text-left font-mono text-[11px] text-slate-800 cursor-pointer transition-colors truncate"
+                                  title="Tap to edit Admission No. in fullscreen"
+                                >
+                                  {row.admissionNumber || 'Optional'}
+                                </button>
                               </td>
-                              <td className="py-1.5 px-2 text-center">
+                              <td className="py-2 px-2 text-center">
                                 <button
                                   type="button"
                                   onClick={() =>
@@ -2024,7 +2534,7 @@ export const StudentsPage: React.FC<StudentsPageProps> = ({
                                       prev.filter((r) => r.localId !== row.localId)
                                     )
                                   }
-                                  className="p-1 text-slate-400 hover:text-rose-600 cursor-pointer"
+                                  className="p-1.5 text-slate-400 hover:text-rose-600 cursor-pointer"
                                   aria-label="Remove extracted row"
                                 >
                                   <Trash2 className="w-3.5 h-3.5" />
@@ -2040,11 +2550,11 @@ export const StudentsPage: React.FC<StudentsPageProps> = ({
               )}
             </div>
 
-            <div className="px-5 py-3.5 border-t border-slate-200 bg-slate-50 flex items-center justify-end gap-2.5 text-xs">
+            <div className="px-4 sm:px-5 py-3.5 border-t border-slate-200 bg-slate-50 flex items-center justify-end gap-2.5 text-xs shrink-0 pb-[max(0.875rem,env(safe-area-inset-bottom))]">
               <button
                 type="button"
                 onClick={handleCloseBulkScanModal}
-                className="px-4 py-2 font-semibold text-slate-700 hover:bg-slate-200/70 rounded-md cursor-pointer"
+                className="min-h-[42px] px-4 py-2 font-semibold text-slate-700 hover:bg-slate-200/70 rounded-lg cursor-pointer"
               >
                 Close
               </button>
@@ -2052,7 +2562,7 @@ export const StudentsPage: React.FC<StudentsPageProps> = ({
                 type="button"
                 disabled={isExtractingRoster || isSavingBulk || includedValidBulkRows.length === 0}
                 onClick={() => void handleBulkEnrollSubmit()}
-                className="inline-flex items-center gap-1.5 px-4 py-2 font-semibold text-white bg-emerald-700 hover:bg-emerald-800 disabled:bg-slate-300 disabled:cursor-not-allowed rounded-md shadow-xs cursor-pointer"
+                className="min-h-[42px] inline-flex items-center gap-1.5 px-4 py-2 font-semibold text-white bg-emerald-700 hover:bg-emerald-800 disabled:bg-slate-300 disabled:cursor-not-allowed rounded-lg shadow-xs cursor-pointer"
               >
                 {isSavingBulk && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
                 <span>
@@ -2065,6 +2575,349 @@ export const StudentsPage: React.FC<StudentsPageProps> = ({
           </div>
         </div>
       )}
+
+      {/* FULLSCREEN EXTRACTED FIELD EDITOR (Opens when tapping any extracted field) */}
+      {showBulkScanModal && fullscreenEditTarget && (() => {
+        const activeIndex = bulkRows.findIndex((r) => r.localId === fullscreenEditTarget.localId);
+        const activeRow = activeIndex >= 0 ? bulkRows[activeIndex] : null;
+        if (!activeRow) return null;
+
+        const prevRow = activeIndex > 0 ? bulkRows[activeIndex - 1] : null;
+        const nextRow = activeIndex < bulkRows.length - 1 ? bulkRows[activeIndex + 1] : null;
+        const parsedSn = parseInt(activeRow.studentNumber, 10);
+        const hasSnConflict =
+          bulkClassMode === 'existing' &&
+          Number.isFinite(parsedSn) &&
+          existingRollNumbersForBulkClass.has(parsedSn);
+
+        return (
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Fullscreen Extracted Student Editor"
+            className="fixed inset-0 z-[75] bg-white flex flex-col"
+          >
+            {/* Top Bar */}
+            <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between gap-3 shrink-0">
+              <div className="flex items-center gap-2 min-w-0">
+                <button
+                  type="button"
+                  onClick={() => setFullscreenEditTarget(null)}
+                  className="min-h-[42px] px-3 py-2 rounded-lg border border-slate-300 bg-white hover:bg-slate-100 text-slate-800 text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                  <span>Done</span>
+                </button>
+                <div className="min-w-0">
+                  <div className="text-sm font-bold text-slate-900 truncate tabular-nums">
+                    Row #{activeRow.studentNumber || '—'} · Pupil {activeIndex + 1} of {bulkRows.length}
+                  </div>
+                  <div className="text-[11px] text-slate-500">
+                    Fullscreen enrollment editor
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-1.5 shrink-0">
+                {bulkPreviewUrl && (
+                  <button
+                    type="button"
+                    onClick={() => setFullscreenShowPhotoRef((prev) => !prev)}
+                    className={`min-h-[42px] inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border text-xs font-semibold cursor-pointer ${
+                      fullscreenShowPhotoRef
+                        ? 'bg-emerald-50 border-emerald-400 text-emerald-900'
+                        : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-100'
+                    }`}
+                  >
+                    <Eye className="w-3.5 h-3.5" />
+                    <span className="hidden sm:inline">{fullscreenShowPhotoRef ? 'Hide Photo' : 'Check Photo'}</span>
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  disabled={!prevRow}
+                  onClick={() =>
+                    prevRow &&
+                    setFullscreenEditTarget({
+                      localId: prevRow.localId,
+                      field: fullscreenEditTarget.field
+                    })
+                  }
+                  className="min-h-[42px] min-w-[42px] inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white hover:bg-slate-100 disabled:opacity-40 text-slate-700 cursor-pointer"
+                  aria-label="Previous student"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                </button>
+                <button
+                  type="button"
+                  disabled={!nextRow}
+                  onClick={() =>
+                    nextRow &&
+                    setFullscreenEditTarget({
+                      localId: nextRow.localId,
+                      field: fullscreenEditTarget.field
+                    })
+                  }
+                  className="min-h-[42px] min-w-[42px] inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white hover:bg-slate-100 disabled:opacity-40 text-slate-700 cursor-pointer"
+                  aria-label="Next student"
+                >
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            {/* Scrollable Body */}
+            <div className="flex-1 overflow-y-auto p-4 sm:p-6">
+              <div className="max-w-2xl mx-auto space-y-5">
+                {fullscreenShowPhotoRef && bulkPreviewUrl && (
+                  <div className="rounded-xl border border-slate-300 bg-slate-950 p-2">
+                    <div className="max-h-[38vh] overflow-auto flex justify-center">
+                      <img
+                        src={bulkPreviewUrl}
+                        alt="Register handwriting reference"
+                        className="max-w-full object-contain rounded"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-600 mb-1.5">
+                    Physical Register Row #
+                  </label>
+                  <input
+                    ref={fullscreenRowNumInputRef}
+                    type="number"
+                    min="1"
+                    value={activeRow.studentNumber}
+                    onChange={(e) =>
+                      setBulkRows((prev) =>
+                        prev.map((r) =>
+                          r.localId === activeRow.localId
+                            ? { ...r, studentNumber: e.target.value }
+                            : r
+                        )
+                      )
+                    }
+                    className={`w-full min-h-[52px] px-4 py-3 text-lg font-bold rounded-xl border-2 tabular-nums focus:outline-hidden focus:ring-2 focus:ring-emerald-600 ${
+                      hasSnConflict
+                        ? 'border-amber-400 bg-amber-50 text-amber-950'
+                        : 'border-slate-300 bg-white text-slate-900'
+                    }`}
+                  />
+                  {hasSnConflict && (
+                    <div className="mt-1.5 text-xs text-amber-800 flex items-center gap-1.5">
+                      <AlertTriangle className="w-4 h-4 shrink-0" />
+                      <span>Row #{parsedSn} already exists in the selected class.</span>
+                    </div>
+                  )}
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-600 mb-1.5">
+                    Student Full Name
+                  </label>
+                  <input
+                    ref={fullscreenNameInputRef}
+                    type="text"
+                    value={activeRow.fullName}
+                    onChange={(e) =>
+                      setBulkRows((prev) =>
+                        prev.map((r) =>
+                          r.localId === activeRow.localId
+                            ? { ...r, fullName: e.target.value }
+                            : r
+                        )
+                      )
+                    }
+                    placeholder="Enter student full name"
+                    className="w-full min-h-[54px] px-4 py-3 text-lg font-bold rounded-xl border-2 border-slate-300 bg-white text-slate-900 focus:outline-hidden focus:ring-2 focus:ring-emerald-600"
+                  />
+
+                  {activeRow.originalOcrName &&
+                    activeRow.originalOcrName !== activeRow.fullName && (
+                      <div className="mt-2 p-3 rounded-xl bg-emerald-50 border border-emerald-200 flex flex-wrap items-center justify-between gap-2 text-xs">
+                        <div className="text-emerald-950">
+                          Original OCR reading: <strong className="italic">"{activeRow.originalOcrName}"</strong>
+                          {activeRow.aiCorrectionNote ? ` · ${activeRow.aiCorrectionNote}` : ''}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setBulkRows((prev) =>
+                              prev.map((r) =>
+                                r.localId === activeRow.localId
+                                  ? {
+                                      ...r,
+                                      fullName: activeRow.originalOcrName || r.fullName,
+                                      aiCorrected: false
+                                    }
+                                  : r
+                              )
+                            )
+                          }
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white border border-emerald-300 text-emerald-900 font-semibold hover:bg-emerald-100 cursor-pointer"
+                        >
+                          <RotateCcw className="w-3.5 h-3.5" />
+                          <span>Use Original OCR</span>
+                        </button>
+                      </div>
+                    )}
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-600 mb-1.5">
+                    Admission Number (Optional)
+                  </label>
+                  <input
+                    ref={fullscreenAdmInputRef}
+                    type="text"
+                    value={activeRow.admissionNumber}
+                    onChange={(e) =>
+                      setBulkRows((prev) =>
+                        prev.map((r) =>
+                          r.localId === activeRow.localId
+                            ? { ...r, admissionNumber: e.target.value }
+                            : r
+                        )
+                      )
+                    }
+                    placeholder="e.g. LEA/2026/0014"
+                    className="w-full min-h-[52px] px-4 py-3 text-base font-mono font-semibold rounded-xl border-2 border-slate-300 bg-white text-slate-900 focus:outline-hidden focus:ring-2 focus:ring-emerald-600"
+                  />
+                </div>
+
+                <label className="flex items-center justify-between p-4 rounded-xl border border-slate-200 bg-slate-50 cursor-pointer">
+                  <div>
+                    <div className="text-sm font-bold text-slate-900">Include in Class Enrollment</div>
+                    <div className="text-xs text-slate-500">
+                      Uncheck if this row is blank, crossed out, or should be skipped.
+                    </div>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={activeRow.include}
+                    onChange={(e) =>
+                      setBulkRows((prev) =>
+                        prev.map((r) =>
+                          r.localId === activeRow.localId
+                            ? { ...r, include: e.target.checked }
+                            : r
+                        )
+                      )
+                    }
+                    className="w-5 h-5 accent-emerald-700"
+                  />
+                </label>
+              </div>
+            </div>
+
+            {/* Bottom Sticky Bar */}
+            <div className="px-4 py-3 bg-slate-50 border-t border-slate-200 flex items-center justify-between gap-2.5 shrink-0 pb-[max(0.875rem,env(safe-area-inset-bottom))]">
+              <button
+                type="button"
+                onClick={() => {
+                  const targetNext = nextRow || prevRow;
+                  setBulkRows((prev) => prev.filter((r) => r.localId !== activeRow.localId));
+                  if (targetNext) {
+                    setFullscreenEditTarget({
+                      localId: targetNext.localId,
+                      field: fullscreenEditTarget.field
+                    });
+                  } else {
+                    setFullscreenEditTarget(null);
+                  }
+                }}
+                className="min-h-[44px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-rose-200 bg-white hover:bg-rose-50 text-rose-700 text-xs font-semibold cursor-pointer"
+              >
+                <Trash2 className="w-4 h-4" />
+                <span>Remove Row</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  if (nextRow) {
+                    setFullscreenEditTarget({
+                      localId: nextRow.localId,
+                      field: fullscreenEditTarget.field
+                    });
+                  } else {
+                    setFullscreenEditTarget(null);
+                  }
+                }}
+                className="min-h-[44px] flex-1 sm:flex-initial inline-flex items-center justify-center gap-1.5 px-5 py-2.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-sm font-bold shadow-xs cursor-pointer"
+              >
+                <span>{nextRow ? 'Save & Next Pupil' : 'Save & Return'}</span>
+                {nextRow && <ChevronRight className="w-4 h-4" />}
+              </button>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* FULLSCREEN IMAGE PREVIEW FOR ENROLLMENT */}
+      {bulkIsFullscreenPreview && bulkPreviewUrl && (
+        <div className="fixed inset-0 z-[72] bg-slate-950/95 backdrop-blur-xs flex flex-col p-4">
+          <div className="flex items-center justify-between pb-3 text-white border-b border-slate-800">
+            <div className="text-sm font-semibold truncate">
+              {bulkImageMeta?.fileName || 'Enrollment Register Photo'}
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setBulkIsFullscreenPreview(false);
+                  handleClearBulkPreview();
+                }}
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded bg-rose-900/70 hover:bg-rose-800 text-xs text-white cursor-pointer"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Delete</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setBulkIsFullscreenPreview(false)}
+                className="p-1.5 rounded text-slate-300 hover:text-white cursor-pointer"
+                aria-label="Close fullscreen preview"
+              >
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+          </div>
+          <div className="flex-1 flex items-center justify-center p-4 overflow-auto">
+            <img
+              src={bulkPreviewUrl}
+              alt="Full size enrollment register preview"
+              className="max-h-[85vh] max-w-[92vw] object-contain"
+            />
+          </div>
+        </div>
+      )}
+
+      {/* FULLSCREEN ANDROID-STYLE DRAG-EDGE CROPPER FOR ENROLLMENT */}
+      {bulkRawSourceUrl && (
+        <RegisterImageCropperModal
+          isOpen={bulkIsCropModalOpen}
+          imageUrl={bulkRawSourceUrl}
+          initialCropBox={bulkCropBox}
+          imageDimensions={bulkRawDimensions || (bulkImageMeta ? { width: bulkImageMeta.width, height: bulkImageMeta.height } : null)}
+          onApplyCrop={(crop) => void handleApplyBulkCrop(crop)}
+          onClose={() => setBulkIsCropModalOpen(false)}
+        />
+      )}
+
+      {/* LIVE IN-APP CAMERA VIEWFINDER FOR ENROLLMENT */}
+      <LiveCameraViewfinderModal
+        isOpen={bulkIsLiveCameraOpen}
+        title="Enrollment Roster Camera"
+        frameHintTop="Align student names & Row # inside frame"
+        frameHintBottom="Hold upright in clear lighting"
+        onCaptureDataUrl={handleBulkLiveCameraCapture}
+        onFallbackToNativeCamera={() => bulkCameraInputRef.current?.click()}
+        onClose={() => setBulkIsLiveCameraOpen(false)}
+      />
     </div>
   );
 };

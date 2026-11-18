@@ -5,6 +5,11 @@ import {
   getGoogleCloudVisionInfo,
   processWithGoogleCloudVision
 } from './googleCloudVisionService.js';
+import {
+  correctNigerianRosterNames,
+  getGeminiApiKey,
+  type RosterStudentCandidate
+} from './rosterNameCorrectionService.js';
 
 dotenv.config();
 
@@ -223,10 +228,10 @@ export function createApiApp(): express.Express {
     }
   });
 
-  // POST /api/extract-roster: Extract full student roster (S/N, Name, Admission No.) exclusively via Google Cloud Vision
+  // POST /api/extract-roster: Extract full student roster via Google Cloud Vision + optional Nigerian-context AI name correction
   app.post('/api/extract-roster', async (req, res) => {
     try {
-      const { image } = req.body;
+      const { image, applyAiCorrection = true } = req.body;
       const parsedImage = validateImageDataPayload(image);
       if (parsedImage.ok === false) {
         return res.status(400).json({
@@ -239,21 +244,62 @@ export function createApiApp(): express.Express {
       const visionRes = await extractRosterWithGoogleCloudVision(
         Buffer.from(parsedImage.base64Data, 'base64')
       );
-      if (visionRes.ok) {
-        return res.json({
-          ok: true,
-          classDetected: visionRes.classDetected || null,
-          students: visionRes.students || [],
-          rawText: visionRes.rawText,
-          modelUsed: 'google-cloud-vision',
-          timestamp: new Date().toISOString()
+      if (!visionRes.ok) {
+        return res.status(visionRes.code === 'NO_CREDENTIALS' ? 503 : 400).json({
+          ok: false,
+          code: visionRes.code || 'GCP_VISION_ERROR',
+          error: visionRes.error || 'Google Cloud Vision could not extract the student roster.'
         });
       }
 
-      return res.status(visionRes.code === 'NO_CREDENTIALS' ? 503 : 400).json({
-        ok: false,
-        code: visionRes.code || 'GCP_VISION_ERROR',
-        error: visionRes.error || 'Google Cloud Vision could not extract the student roster.'
+      let students: RosterStudentCandidate[] = (visionRes.students || []).map((s) => ({
+        studentNumber: s.studentNumber,
+        fullName: s.fullName,
+        admissionNumber: s.admissionNumber,
+        originalOcrName: s.fullName,
+        aiCorrected: false
+      }));
+
+      let aiCorrectionStatus: 'applied' | 'skipped' | 'not_configured' | 'error' = 'skipped';
+      let aiCorrectedCount = 0;
+      let aiCorrectionMessage: string | undefined;
+      let aiModelUsed: string | undefined;
+
+      if (applyAiCorrection !== false && students.length > 0) {
+        if (!getGeminiApiKey()) {
+          aiCorrectionStatus = 'not_configured';
+        } else {
+          const aiRes = await correctNigerianRosterNames({
+            students,
+            rawText: visionRes.rawText,
+            image: {
+              mimeType: parsedImage.mimeType,
+              base64Data: parsedImage.base64Data
+            }
+          });
+          if (aiRes.ok) {
+            students = aiRes.students;
+            aiCorrectedCount = aiRes.correctedCount;
+            aiCorrectionStatus = 'applied';
+            aiModelUsed = aiRes.modelUsed;
+          } else {
+            aiCorrectionStatus = 'error';
+            aiCorrectionMessage = aiRes.message;
+          }
+        }
+      }
+
+      return res.json({
+        ok: true,
+        classDetected: visionRes.classDetected || null,
+        students,
+        rawText: visionRes.rawText,
+        modelUsed: 'google-cloud-vision',
+        aiCorrectionStatus,
+        aiCorrectedCount,
+        aiCorrectionMessage,
+        aiModelUsed,
+        timestamp: new Date().toISOString()
       });
     } catch (err: any) {
       console.error('Google Cloud Vision roster error:', err?.message || 'unknown error');
@@ -261,6 +307,80 @@ export function createApiApp(): express.Express {
         ok: false,
         code: 'GCP_VISION_ERROR',
         error: err?.message || 'Failed to extract student roster via Google Cloud Vision.'
+      });
+    }
+  });
+
+  // POST /api/correct-roster-names: On-demand AI Nigerian-context name cleanup strictly for student enrollment
+  app.post('/api/correct-roster-names', async (req, res) => {
+    try {
+      const { students, rawText, image } = req.body;
+      if (!Array.isArray(students) || students.length === 0) {
+        return res.status(400).json({
+          ok: false,
+          code: 'INVALID_REQUEST',
+          error: 'At least one extracted student row is required for AI name correction.'
+        });
+      }
+
+      const normalizedInput: RosterStudentCandidate[] = students
+        .map((item: any, idx: number) => ({
+          studentNumber:
+            Number.isInteger(Number(item?.studentNumber)) && Number(item.studentNumber) > 0
+              ? Number(item.studentNumber)
+              : idx + 1,
+          fullName: String(item?.fullName || '').trim(),
+          admissionNumber: item?.admissionNumber ? String(item.admissionNumber).trim() : undefined,
+          originalOcrName: item?.originalOcrName ? String(item.originalOcrName).trim() : String(item?.fullName || '').trim()
+        }))
+        .filter((s) => s.fullName.length > 0);
+
+      if (normalizedInput.length === 0) {
+        return res.status(400).json({
+          ok: false,
+          code: 'INVALID_REQUEST',
+          error: 'No non-empty student names provided for AI correction.'
+        });
+      }
+
+      let imagePayload: { mimeType: string; base64Data: string } | null = null;
+      if (typeof image === 'string' && image.trim().length > 0) {
+        const parsedImage = validateImageDataPayload(image);
+        if (parsedImage.ok) {
+          imagePayload = {
+            mimeType: parsedImage.mimeType,
+            base64Data: parsedImage.base64Data
+          };
+        }
+      }
+
+      const result = await correctNigerianRosterNames({
+        students: normalizedInput,
+        rawText: typeof rawText === 'string' ? rawText : undefined,
+        image: imagePayload
+      });
+
+      if (!result.ok) {
+        return res.status(result.httpStatus || 500).json({
+          ok: false,
+          code: result.code || 'GEMINI_ROSTER_CORRECTION_ERROR',
+          error: result.message || 'AI Nigerian-context name correction failed.'
+        });
+      }
+
+      return res.json({
+        ok: true,
+        students: result.students,
+        correctedCount: result.correctedCount,
+        modelUsed: result.modelUsed,
+        timestamp: new Date().toISOString()
+      });
+    } catch (err: any) {
+      console.error('AI roster name correction error:', err?.message || 'unknown error');
+      return res.status(500).json({
+        ok: false,
+        code: 'GEMINI_ROSTER_CORRECTION_ERROR',
+        error: err?.message || 'Unexpected error during AI name correction.'
       });
     }
   });

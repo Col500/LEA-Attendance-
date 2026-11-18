@@ -883,7 +883,22 @@ export function parseLeaRegisterFromAnnotation(
       if (fullName.length <= 3 && !admNumber) return;
       if (fullName === fullName.toLowerCase() && fullName.length <= 4 && !admNumber) return;
 
-      const rowNumber = rowBands.length + 1;
+      const matchedLeftSn = leftSerialWords.find(
+        (w) => Math.abs(yCorrLeft(w.xCenter, w.yCenter) - cluster.yc) <= rowHeight * 0.48
+      );
+      const matchedRightSn = serialCandidates.find(
+        (w) => Math.abs(yCorrLeft(w.xCenter, w.yCenter) - cluster.yc) <= rowHeight * 0.52
+      );
+      const printedNum = Number(matchedLeftSn?.text || matchedRightSn?.text || 0);
+      const prevRowNum = rowBands.length > 0 ? rowBands[rowBands.length - 1].rowNumber : 0;
+      const rowNumber =
+        printedNum >= 1 &&
+        printedNum <= 45 &&
+        printedNum > prevRowNum &&
+        printedNum - prevRowNum <= 6
+          ? printedNum
+          : prevRowNum + 1;
+
       const rightSer = rightSerialByNum.get(rowNumber);
       const anchorWord = deduped[deduped.length - 1] || cluster.words[0];
       const gridYc = rightSer
@@ -928,9 +943,22 @@ export function parseLeaRegisterFromAnnotation(
       }
     }
 
-    markClusters.forEach((cluster, idx) => {
+    markClusters.forEach((cluster) => {
+      const matchedSn = serialCandidates.find(
+        (w) => Math.abs(yCorr(w.xCenter, w.yCenter) - cluster.yc) <= rowHeight * 0.48
+      );
+      const printedNum = Number(matchedSn?.text || 0);
+      const prevRowNum = rowBands.length > 0 ? rowBands[rowBands.length - 1].rowNumber : 0;
+      const rowNumber =
+        printedNum >= 1 &&
+        printedNum <= 45 &&
+        printedNum > prevRowNum &&
+        printedNum - prevRowNum <= 6
+          ? printedNum
+          : prevRowNum + 1;
+
       rowBands.push({
-        rowNumber: idx + 1,
+        rowNumber,
         yc: cluster.yc,
         ycLeft: cluster.yc,
         fullName: null,

@@ -3,6 +3,8 @@ import {
   confirmAttendanceSessionInSupabase,
   createClassInSupabase,
   createStudentInSupabase,
+  deleteAllAttendanceSessionsInSupabase,
+  deleteAttendanceSessionInSupabase,
   fetchClassesFromSupabase,
   fetchConfirmedSessionsFromSupabase,
   fetchStudentsFromSupabase,
@@ -89,6 +91,7 @@ function createMockSupabaseHarness(options?: { authenticated?: boolean; role?: '
     },
     from(table: string) {
       let filterEq: Record<string, unknown> = {};
+      let filterNeq: Record<string, unknown> = {};
       let op: 'select' | 'insert' | 'update' | 'delete' = 'select';
       let payload: any = null;
 
@@ -173,28 +176,46 @@ function createMockSupabaseHarness(options?: { authenticated?: boolean; role?: '
           }
         }
 
-        if (table === 'attendance_sessions' && op === 'select') {
-          const rows = state.sessions.map((s) => {
-            const cls = state.classes.find((c) => c.id === s.class_id);
-            const recs = state.records
-              .filter((r) => r.attendance_session_id === s.id)
-              .map((r) => {
-                const st = state.students.find((x) => x.id === r.student_id);
-                return {
-                  ...r,
-                  students: st
-                    ? { id: st.id, full_name: st.full_name, student_number: st.student_number }
-                    : null
-                };
-              });
-            return {
-              ...s,
-              classes: cls ? { name: cls.name } : null,
-              profiles: { display_name: 'Mrs. Folashade Adebayo' },
-              attendance_records: recs
-            };
-          });
-          return { data: rows, error: null };
+        if (table === 'attendance_sessions') {
+          if (op === 'select') {
+            const rows = state.sessions.map((s) => {
+              const cls = state.classes.find((c) => c.id === s.class_id);
+              const recs = state.records
+                .filter((r) => r.attendance_session_id === s.id)
+                .map((r) => {
+                  const st = state.students.find((x) => x.id === r.student_id);
+                  return {
+                    ...r,
+                    students: st
+                      ? { id: st.id, full_name: st.full_name, student_number: st.student_number }
+                      : null
+                  };
+                });
+              return {
+                ...s,
+                classes: cls ? { name: cls.name } : null,
+                profiles: { display_name: 'Mrs. Folashade Adebayo' },
+                attendance_records: recs
+              };
+            });
+            return { data: rows, error: null };
+          }
+          if (op === 'delete') {
+            if (state.role !== 'admin') {
+              return { data: null, error: { code: '42501', message: 'row-level security policy violation' } };
+            }
+            const remaining = state.sessions.filter((s) => {
+              if (filterEq.id !== undefined && s.id === filterEq.id) return false;
+              if (filterNeq.id !== undefined && s.id !== filterNeq.id) return false;
+              return true;
+            });
+            const removedIds = new Set(
+              state.sessions.filter((s) => !remaining.includes(s)).map((s) => s.id)
+            );
+            state.sessions = remaining;
+            state.records = state.records.filter((r) => !removedIds.has(r.attendance_session_id));
+            return { data: null, error: null };
+          }
         }
 
         return { data: [], error: null };
@@ -221,6 +242,13 @@ function createMockSupabaseHarness(options?: { authenticated?: boolean; role?: '
         eq(col: string, val: unknown) {
           filterEq[col] = val;
           return builder;
+        },
+        neq(col: string, val: unknown) {
+          filterNeq[col] = val;
+          return builder;
+        },
+        then(onFulfilled: any, onRejected: any) {
+          return exec('many').then(onFulfilled, onRejected);
         },
         order() {
           return {
@@ -474,6 +502,42 @@ async function runTests() {
   assert.equal(seedResult.studentsCreated, 1, 'Should create Nadia Suleiman and skip existing Abubakar');
   assert.equal(seedResult.studentsSkipped, 1);
   console.log('✓ Test 5 passed: Explicit local-to-remote roster seeding avoids duplicates safely');
+
+  // 6. Admin-only single & bulk attendance session deletion
+  await assert.rejects(
+    () => deleteAttendanceSessionInSupabase(viewerHarness.client, savedSession.id),
+    /Read-only access|Row Level Security/
+  );
+  await deleteAttendanceSessionInSupabase(harness.client, savedSession.id);
+  assert.equal(harness.state.sessions.length, 0);
+  assert.equal(harness.state.records.length, 0);
+
+  // Confirm a second session, then verify deleteAllAttendanceSessionsInSupabase clears all sessions & records
+  const secondDraft = validateAndBuildSessionDraft(validMultiWeekSample, {
+    classId: createdClass.id,
+    className: createdClass.name,
+    attendancePeriod: '2026-10-16 (Morning Session)',
+    sourceImageMetadata: {
+      fileName: 'reg2.jpg',
+      rotation: 0,
+      capturedAt: new Date().toISOString(),
+      modelUsed: 'gemini-3.8-flash'
+    },
+    classStudents: classRoster
+  });
+  await confirmAttendanceSessionInSupabase(harness.client, {
+    draft: secondDraft,
+    sessionSummary: { ...summary, id: 'temp-session-2', date: '2026-10-16', sourceDraftId: secondDraft.id },
+    classId: createdClass.id,
+    selectedDate: '2026-10-16',
+    modelUsed: 'gemini-3.8-flash'
+  });
+  assert.equal(harness.state.sessions.length, 1);
+  await deleteAllAttendanceSessionsInSupabase(harness.client);
+  assert.equal(harness.state.sessions.length, 0);
+  assert.equal(harness.state.records.length, 0);
+  assert.equal(harness.state.students.length >= 1, true, 'Enrolled students must stay intact');
+  console.log('✓ Test 6 passed: Admin-only attendance record deletion preserves enrolled roster');
 
   console.log('\nALL SUPABASE PERSISTENCE & SAFETY TESTS PASSED.');
 }

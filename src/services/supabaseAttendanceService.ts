@@ -789,6 +789,42 @@ export async function confirmExistingSessionInSupabase(
 }
 
 /**
+ * Deletes a single attendance session (and cascades to its attendance_records) in Supabase.
+ */
+export async function deleteAttendanceSessionInSupabase(
+  client: DbClient,
+  sessionId: string
+): Promise<void> {
+  await requireValidAdminSession(client);
+  const { error } = await client
+    .from('attendance_sessions')
+    .delete()
+    .eq('id', sessionId);
+
+  if (error) {
+    throw new Error(formatSupabaseError(error, 'Failed to delete attendance session from database.'));
+  }
+}
+
+/**
+ * Deletes all saved attendance sessions (and cascades to all attendance_records) in Supabase.
+ * Enrolled classes and students are preserved untouched.
+ */
+export async function deleteAllAttendanceSessionsInSupabase(
+  client: DbClient
+): Promise<void> {
+  await requireValidAdminSession(client);
+  const { error } = await client
+    .from('attendance_sessions')
+    .delete()
+    .neq('id', '00000000-0000-0000-0000-000000000000');
+
+  if (error) {
+    throw new Error(formatSupabaseError(error, 'Failed to delete all saved attendance records from database.'));
+  }
+}
+
+/**
  * Queries ONLY confirmed sessions, scoped students, and matching attendance_records
  * for the requested class and date range.
  */

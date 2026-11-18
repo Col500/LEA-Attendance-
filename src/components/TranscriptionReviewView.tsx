@@ -1159,6 +1159,11 @@ export const TranscriptionReviewView: React.FC<TranscriptionReviewViewProps> = (
                               Detected: "{mapping.detectedName}"
                             </div>
                           )}
+                          {mapping.mappingConfidence === 'ROW_ORDER_MATCH' && mappedStudent && (
+                            <div className="text-[11px] text-emerald-700 font-medium mt-0.5">
+                              Auto-matched from Enrollment Row #{mapping.rowNumber}
+                            </div>
+                          )}
                         </div>
                         <span className="text-[11px] font-semibold px-2 py-0.5 rounded bg-slate-100 text-slate-700">
                           {selectedWeek}
@@ -1298,6 +1303,11 @@ export const TranscriptionReviewView: React.FC<TranscriptionReviewViewProps> = (
                               {mapping.detectedName && (
                                 <div className="text-[11px] text-slate-500">
                                   AI Detected: <span className="italic">"{mapping.detectedName}"</span>
+                                </div>
+                              )}
+                              {mapping.mappingConfidence === 'ROW_ORDER_MATCH' && mappedStudent && (
+                                <div className="text-[11px] text-emerald-700 font-medium">
+                                  Auto-matched from Enrollment Row #{mapping.rowNumber}
                                 </div>
                               )}
 

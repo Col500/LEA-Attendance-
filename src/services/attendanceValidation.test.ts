@@ -264,4 +264,87 @@ console.log('Running Attendance Validation & Human-Review Test Suite...\n');
   console.log('✓ Test 5 passed: Review queue stats, non-coercive explicit review, schedule reassignment, and edit history tracking');
 }
 
+// Test 6: Authoritative Enrollment Row-Number Auto-Assignment (e.g. Primary 3 Ada Samson at Row #5)
+{
+  const primary3Roster: Student[] = [
+    {
+      id: 'std-p3-1',
+      studentNumber: 1,
+      fullName: 'Ibrahim Musa',
+      classId: 'cls-p3',
+      active: true,
+      createdAt: '2026-09-01T08:00:00.000Z',
+      updatedAt: '2026-09-01T08:00:00.000Z'
+    },
+    {
+      id: 'std-ada-row5',
+      studentNumber: 5,
+      fullName: 'Ada Samson',
+      classId: 'cls-p3',
+      admissionNumber: 'LEA/P3/005',
+      active: true,
+      createdAt: '2026-09-01T08:00:00.000Z',
+      updatedAt: '2026-09-01T08:00:00.000Z'
+    }
+  ];
+
+  // Subsequent scan of right-hand attendance grid (no names printed) or illegible name in Row 5
+  const subsequentGridScan = {
+    totalRowsDetected: 2,
+    detectedDays: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'],
+    layoutQuality: { detectedWeeks: ['Week 1'] },
+    rows: [
+      {
+        rowNumber: 1,
+        studentNameDetected: null,
+        marks: [
+          { week: 'Week 1', day: 'Monday', rawSymbol: '/', status: 'PRESENT' },
+          { week: 'Week 1', day: 'Tuesday', rawSymbol: '/', status: 'PRESENT' },
+          { week: 'Week 1', day: 'Wednesday', rawSymbol: '/', status: 'PRESENT' },
+          { week: 'Week 1', day: 'Thursday', rawSymbol: '/', status: 'PRESENT' },
+          { week: 'Week 1', day: 'Friday', rawSymbol: '/', status: 'PRESENT' }
+        ]
+      },
+      // Row 4 is blank/skipped on register; Row 5 must still auto-assign to Ada Samson (studentNumber: 5)
+      {
+        rowNumber: 5,
+        studentNameDetected: 'Row 5 Pupil (faint)',
+        marks: [
+          { week: 'Week 1', day: 'Monday', rawSymbol: '/', status: 'PRESENT' },
+          { week: 'Week 1', day: 'Tuesday', rawSymbol: '0', status: 'ABSENT' },
+          { week: 'Week 1', day: 'Wednesday', rawSymbol: '/', status: 'PRESENT' },
+          { week: 'Week 1', day: 'Thursday', rawSymbol: '/', status: 'PRESENT' },
+          { week: 'Week 1', day: 'Friday', rawSymbol: '/', status: 'PRESENT' }
+        ]
+      }
+    ]
+  };
+
+  const p3Draft = validateAndBuildSessionDraft(subsequentGridScan, {
+    ...baseContext,
+    classId: 'cls-p3',
+    className: 'Primary 3',
+    classStudents: primary3Roster
+  });
+
+  const row1 = p3Draft.rowMappings.find((m) => m.rowNumber === 1)!;
+  const row5 = p3Draft.rowMappings.find((m) => m.rowNumber === 5)!;
+  assert.equal(row1.studentId, 'std-p3-1');
+  assert.equal(row1.mappingConfidence, 'ROW_ORDER_MATCH');
+  assert.equal(row1.mappingConfirmed, true);
+
+  assert.equal(row5.studentId, 'std-ada-row5', 'Row 5 must auto-assign to Ada Samson enrolled at Row #5');
+  assert.equal(row5.mappingConfidence, 'ROW_ORDER_MATCH');
+  assert.equal(row5.mappingConfirmed, true);
+  assert.equal(row5.reviewRequired, false);
+
+  const adaTue = p3Draft.cells.find(
+    (c) => c.rowNumber === 5 && c.dayOfWeek === 'Tuesday'
+  )!;
+  assert.equal(adaTue.studentId, 'std-ada-row5');
+  assert.equal(adaTue.status, 'ABSENT');
+
+  console.log('✓ Test 6 passed: Enrollment Row #5 auto-assigns subsequent scan marks directly to Ada Samson');
+}
+
 console.log('\nALL VALIDATION & HUMAN-REVIEW TESTS PASSED.');

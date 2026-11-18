@@ -44,7 +44,9 @@ import {
   saveStoredStudents,
   getStoredAttendanceSessions,
   addStoredAttendanceSession,
-  saveStoredAttendanceSessions
+  saveStoredAttendanceSessions,
+  deleteStoredAttendanceSession,
+  clearAllStoredAttendanceRecords
 } from './services/rosterStorage';
 import { getSupabaseClient, isSupabaseConfigured } from './lib/supabaseClient';
 import {
@@ -53,6 +55,8 @@ import {
   createClassInSupabase,
   createStudentInSupabase,
   createStudentsBulkInSupabase,
+  deleteAllAttendanceSessionsInSupabase,
+  deleteAttendanceSessionInSupabase,
   deleteClassInSupabase,
   fetchClassesFromSupabase,
   fetchConfirmedSessionsFromSupabase,
@@ -304,6 +308,47 @@ export default function App() {
     if (persistenceMode !== 'supabase-live') {
       saveStoredAttendanceSessions(updated);
     }
+  };
+
+  const handleDeleteSession = async (sessionId: string) => {
+    if (supabaseConfigured && !canWrite) {
+      throw new Error('Read-only access: Only the School Admin login can delete attendance records.');
+    }
+
+    const client = getSupabaseClient();
+    const target = sessions.find((s) => s.id === sessionId);
+    if (persistenceMode === 'supabase-live' && client) {
+      if (!target || target.persistenceTarget === 'supabase' || !target.id.startsWith('failed-')) {
+        await deleteAttendanceSessionInSupabase(client, sessionId);
+      }
+    } else if (supabaseConfigured) {
+      throw new Error('Your authentication session is inactive. Sign in as School Admin to delete records.');
+    }
+
+    setSessions((prev) => prev.filter((s) => s.id !== sessionId));
+    if (selectedSessionForDetail?.id === sessionId) {
+      setSelectedSessionForDetail(null);
+    }
+    if (persistenceMode !== 'supabase-live') {
+      deleteStoredAttendanceSession(sessionId);
+    }
+  };
+
+  const handleDeleteAllAttendanceRecords = async () => {
+    if (supabaseConfigured && !canWrite) {
+      throw new Error('Read-only access: Only the School Admin login can delete attendance records.');
+    }
+
+    const client = getSupabaseClient();
+    if (persistenceMode === 'supabase-live' && client) {
+      await deleteAllAttendanceSessionsInSupabase(client);
+    } else if (supabaseConfigured) {
+      throw new Error('Your authentication session is inactive. Sign in as School Admin to delete records.');
+    }
+
+    clearAllStoredAttendanceRecords();
+    setSessions([]);
+    setSelectedSessionForDetail(null);
   };
 
   // Roster Management Handlers (Supabase when authenticated & live, localStorage fallback otherwise)
@@ -837,6 +882,8 @@ export default function App() {
               canWrite={canWrite}
               isSupabaseLive={persistenceMode === 'supabase-live'}
               onConfirmSession={handleConfirmSessionFromRecords}
+              onDeleteSession={handleDeleteSession}
+              onDeleteAllSessions={handleDeleteAllAttendanceRecords}
               initialSelectedSession={selectedSessionForDetail}
               onClearInitialSession={() => setSelectedSessionForDetail(null)}
             />

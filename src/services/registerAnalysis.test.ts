@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {
   clampCropBox,
   computeAspectPreservingSize,
+  computeConditionalUpscaleSize,
   computeRotatedDimensions,
   computeTableRowStrips,
   normalizeQuarterRotation
@@ -90,6 +91,25 @@ const sampleStudents: Student[] = [
   assert.equal(strips[1].ymax, 900);
   // Overlapping boundary check ensures rows near middle aren't clipped
   assert.ok(strips[0].ymax > strips[1].ymin);
+
+  // Conditional browser upscaling for tight crops / low-res captures
+  const tightCrop = computeConditionalUpscaleSize(500, 800, 1800);
+  assert.equal(tightCrop.wasUpscaled, true);
+  assert.equal(tightCrop.wasResized, true);
+  assert.equal(tightCrop.width, 1000);
+  assert.equal(tightCrop.height, 1600);
+
+  const oversizedPhoto = computeConditionalUpscaleSize(4000, 3000, 1800);
+  assert.equal(oversizedPhoto.wasUpscaled, false);
+  assert.equal(oversizedPhoto.wasResized, true);
+  assert.equal(oversizedPhoto.width, 1800);
+  assert.equal(oversizedPhoto.height, 1350);
+
+  const alreadySharp = computeConditionalUpscaleSize(1300, 1750, 1800);
+  assert.equal(alreadySharp.wasUpscaled, false);
+  assert.equal(alreadySharp.wasResized, false);
+  assert.equal(alreadySharp.width, 1300);
+  assert.equal(alreadySharp.height, 1750);
 }
 
 // 2. Register Prompt Structure & Template Non-Assumption Tests

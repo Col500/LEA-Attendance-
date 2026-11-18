@@ -14,7 +14,8 @@ import {
   Calendar,
   HelpCircle,
   Download,
-  WifiOff
+  WifiOff,
+  Trash2
 } from 'lucide-react';
 import { AttendanceSession, ClassItem, ReviewStatus } from '../types/attendance';
 import {
@@ -40,6 +41,8 @@ interface AttendanceRecordsPageProps {
   isSupabaseLive?: boolean;
   canWrite?: boolean;
   onConfirmSession?: (sessionId: string) => void | Promise<void>;
+  onDeleteSession?: (sessionId: string) => void | Promise<void>;
+  onDeleteAllSessions?: () => void | Promise<void>;
   initialSelectedSession?: AttendanceSession | null;
   onClearInitialSession?: () => void;
 }
@@ -50,6 +53,8 @@ export const AttendanceRecordsPage: React.FC<AttendanceRecordsPageProps> = ({
   isSupabaseLive = false,
   canWrite = true,
   onConfirmSession: propOnConfirmSession,
+  onDeleteSession,
+  onDeleteAllSessions,
   initialSelectedSession,
   onClearInitialSession
 }) => {
@@ -64,6 +69,10 @@ export const AttendanceRecordsPage: React.FC<AttendanceRecordsPageProps> = ({
   const [listError, setListError] = useState<string | null>(null);
   const [isExportingCsv, setIsExportingCsv] = useState(false);
   const [exportNotice, setExportNotice] = useState<{ type: 'error' | 'info' | 'success'; message: string } | null>(null);
+
+  // Delete confirmation modal state
+  const [deleteTarget, setDeleteTarget] = useState<{ mode: 'single'; session: AttendanceSession } | { mode: 'all' } | null>(null);
+  const [isDeletingRecords, setIsDeletingRecords] = useState(false);
 
   // Scoped Filters
   const [selectedClassFilter, setSelectedClassFilter] = useState<string>('All');
@@ -361,6 +370,51 @@ export const AttendanceRecordsPage: React.FC<AttendanceRecordsPageProps> = ({
     }
   };
 
+  const handleConfirmDeleteTarget = async () => {
+    if (!deleteTarget) return;
+    setIsDeletingRecords(true);
+    setExportNotice(null);
+    try {
+      if (deleteTarget.mode === 'all') {
+        if (onDeleteAllSessions) {
+          await onDeleteAllSessions();
+        }
+        setInternalSessions([]);
+        if (remoteSessions !== null) setRemoteSessions([]);
+        setActiveSession(null);
+        setExportNotice({
+          type: 'success',
+          message: 'All saved attendance records have been deleted. Enrolled classes and students remain intact.'
+        });
+      } else {
+        const targetId = deleteTarget.session.id;
+        if (onDeleteSession) {
+          await onDeleteSession(targetId);
+        }
+        setInternalSessions((prev) => prev.filter((s) => s.id !== targetId));
+        if (remoteSessions !== null) {
+          setRemoteSessions((prev) => (prev ? prev.filter((s) => s.id !== targetId) : null));
+        }
+        if (activeSession?.id === targetId) {
+          setActiveSession(null);
+        }
+        setExportNotice({
+          type: 'success',
+          message: `Deleted attendance record for ${deleteTarget.session.classGrade} (${deleteTarget.session.date}).`
+        });
+      }
+      setDeleteTarget(null);
+    } catch (err: any) {
+      setExportNotice({
+        type: 'error',
+        message: err?.message || 'Unable to delete attendance records.'
+      });
+      setDeleteTarget(null);
+    } finally {
+      setIsDeletingRecords(false);
+    }
+  };
+
   const clearAllFilters = () => {
     setSelectedClassFilter('All');
     setStartDate('');
@@ -489,6 +543,17 @@ export const AttendanceRecordsPage: React.FC<AttendanceRecordsPageProps> = ({
                 <Download className="w-3.5 h-3.5" />
               )}
               <span>{isExportingCsv ? 'Exporting...' : 'Export Filtered CSV'}</span>
+            </button>
+          )}
+          {canWrite && onDeleteAllSessions && displayedSessions.length > 0 && (
+            <button
+              type="button"
+              disabled={isDeletingRecords || (isSupabaseLive && !isOnline)}
+              onClick={() => setDeleteTarget({ mode: 'all' })}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-lg shadow-xs cursor-pointer disabled:opacity-50"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>Delete All Records</span>
             </button>
           )}
         </div>
@@ -650,46 +715,68 @@ export const AttendanceRecordsPage: React.FC<AttendanceRecordsPageProps> = ({
             const unresolvedCount = (session.blankCount || 0) + (session.uncertainCount || 0);
 
             return (
-              <button
+              <div
                 key={session.id}
-                type="button"
-                onClick={() => void handleOpenSession(session)}
-                className="w-full text-left bg-white rounded-xl border border-slate-200 p-4 shadow-xs hover:border-emerald-400 active:bg-slate-50 space-y-3 cursor-pointer"
+                className="w-full text-left bg-white rounded-xl border border-slate-200 p-4 shadow-xs hover:border-emerald-400 space-y-3"
               >
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <div className="font-bold text-slate-900 text-sm">{session.classGrade}</div>
-                    <div className="text-xs text-slate-500 mt-0.5">
-                      {session.date} · {session.recordedBy}
+                <button
+                  type="button"
+                  onClick={() => void handleOpenSession(session)}
+                  className="w-full text-left space-y-3 cursor-pointer"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <div className="font-bold text-slate-900 text-sm">{session.classGrade}</div>
+                      <div className="text-xs text-slate-500 mt-0.5">
+                        {session.date} · {session.recordedBy}
+                      </div>
+                    </div>
+                    {renderStatus(session.reviewStatus)}
+                  </div>
+
+                  <div className="grid grid-cols-4 gap-2 text-center text-xs tabular-nums">
+                    <div className="p-2 rounded bg-emerald-50 text-emerald-900">
+                      <div className="font-bold text-sm">{session.presentCount}</div>
+                      <div className="text-[10px]">Present</div>
+                    </div>
+                    <div className="p-2 rounded bg-rose-50 text-rose-900">
+                      <div className="font-bold text-sm">{session.absentCount}</div>
+                      <div className="text-[10px]">Absent</div>
+                    </div>
+                    <div className="p-2 rounded bg-slate-100 text-slate-800">
+                      <div className="font-bold text-sm">{unresolvedCount}</div>
+                      <div className="text-[10px]">Blank/Unc.</div>
+                    </div>
+                    <div className="p-2 rounded bg-slate-50 border border-slate-200 text-slate-900">
+                      <div className="font-bold text-sm">{rate !== null ? `${rate}%` : 'N/A'}</div>
+                      <div className="text-[10px]">Rate</div>
                     </div>
                   </div>
-                  {renderStatus(session.reviewStatus)}
-                </div>
+                </button>
 
-                <div className="grid grid-cols-4 gap-2 text-center text-xs">
-                  <div className="p-2 rounded bg-emerald-50 text-emerald-900">
-                    <div className="font-bold text-sm">{session.presentCount}</div>
-                    <div className="text-[10px]">Present</div>
-                  </div>
-                  <div className="p-2 rounded bg-rose-50 text-rose-900">
-                    <div className="font-bold text-sm">{session.absentCount}</div>
-                    <div className="text-[10px]">Absent</div>
-                  </div>
-                  <div className="p-2 rounded bg-slate-100 text-slate-800">
-                    <div className="font-bold text-sm">{unresolvedCount}</div>
-                    <div className="text-[10px]">Blank/Unc.</div>
-                  </div>
-                  <div className="p-2 rounded bg-slate-50 border border-slate-200 text-slate-900">
-                    <div className="font-bold text-sm">{rate !== null ? `${rate}%` : 'N/A'}</div>
-                    <div className="text-[10px]">Rate</div>
-                  </div>
+                <div className="flex items-center justify-between pt-2 border-t border-slate-100">
+                  {canWrite && onDeleteSession ? (
+                    <button
+                      type="button"
+                      onClick={() => setDeleteTarget({ mode: 'single', session })}
+                      className="inline-flex items-center gap-1 text-xs font-semibold text-rose-700 hover:text-rose-900 px-2 py-1 rounded hover:bg-rose-50 cursor-pointer"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Delete</span>
+                    </button>
+                  ) : (
+                    <span />
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => void handleOpenSession(session)}
+                    className="inline-flex items-center text-xs font-semibold text-emerald-700 hover:text-emerald-900 gap-1 px-2 py-1 rounded hover:bg-emerald-50 cursor-pointer"
+                  >
+                    <Eye className="w-3.5 h-3.5" />
+                    <span>Open Session Details</span>
+                  </button>
                 </div>
-
-                <div className="flex items-center justify-end text-xs font-semibold text-emerald-700 gap-1">
-                  <Eye className="w-3.5 h-3.5" />
-                  <span>Open Session Details</span>
-                </div>
-              </button>
+              </div>
             );
           })}
         </div>
@@ -760,17 +847,32 @@ export const AttendanceRecordsPage: React.FC<AttendanceRecordsPageProps> = ({
                         {renderStatus(session.reviewStatus)}
                       </td>
                       <td className="py-3 px-4 text-right whitespace-nowrap">
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            void handleOpenSession(session);
-                          }}
-                          className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700 hover:text-emerald-900 hover:underline px-2 py-1 cursor-pointer"
-                        >
-                          <Eye className="w-3.5 h-3.5" />
-                          <span>Inspect</span>
-                        </button>
+                        <div className="inline-flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void handleOpenSession(session);
+                            }}
+                            className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700 hover:text-emerald-900 hover:underline px-2 py-1 cursor-pointer"
+                          >
+                            <Eye className="w-3.5 h-3.5" />
+                            <span>Inspect</span>
+                          </button>
+                          {canWrite && onDeleteSession && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setDeleteTarget({ mode: 'single', session });
+                              }}
+                              aria-label={`Delete ${session.classGrade} session on ${session.date}`}
+                              className="inline-flex items-center gap-1 text-xs font-semibold text-rose-700 hover:text-rose-900 hover:bg-rose-50 rounded px-2 py-1 cursor-pointer"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   );
@@ -1051,7 +1153,17 @@ export const AttendanceRecordsPage: React.FC<AttendanceRecordsPageProps> = ({
                 )}
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                {canWrite && onDeleteSession && (
+                  <button
+                    type="button"
+                    onClick={() => setDeleteTarget({ mode: 'single', session: activeSession })}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-rose-700 hover:bg-rose-50 border border-rose-200 rounded-md transition-colors cursor-pointer"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Delete Session</span>
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => setActiveSession(null)}
@@ -1078,6 +1190,79 @@ export const AttendanceRecordsPage: React.FC<AttendanceRecordsPageProps> = ({
                     </button>
                   )}
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Confirmation Modal for Deleting Attendance Records */}
+      {deleteTarget && (
+        <div
+          className="fixed inset-0 z-60 bg-slate-950/65 backdrop-blur-xs flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-attendance-modal-title"
+        >
+          <div className="bg-white rounded-xl max-w-md w-full shadow-2xl border border-slate-200 overflow-hidden">
+            <div className="p-4 sm:p-5 border-b border-slate-100 flex items-center gap-2.5 bg-rose-50/70">
+              <div className="p-2 rounded-lg bg-rose-100 text-rose-700 shrink-0">
+                <Trash2 className="w-4 h-4" />
+              </div>
+              <div>
+                <h3
+                  id="delete-attendance-modal-title"
+                  className="text-sm font-bold text-slate-900"
+                >
+                  {deleteTarget.mode === 'all'
+                    ? 'Delete All Saved Attendance Records?'
+                    : 'Delete This Attendance Session?'}
+                </h3>
+                <p className="text-[11px] text-slate-600 mt-0.5">
+                  Enrolled pupils and class rosters will remain intact.
+                </p>
+              </div>
+            </div>
+
+            <div className="p-4 sm:p-5 text-xs text-slate-700 space-y-2 leading-relaxed">
+              {deleteTarget.mode === 'all' ? (
+                <p>
+                  This will permanently remove all saved attendance sessions and mark cells{' '}
+                  {isSupabaseLive ? 'from Supabase PostgreSQL and this device' : 'from this browser'}
+                  . You can re-scan attendance sheets cleanly afterward.
+                </p>
+              ) : (
+                <p>
+                  This will permanently remove the attendance record for{' '}
+                  <strong className="text-slate-900">{deleteTarget.session.classGrade}</strong> dated{' '}
+                  <strong className="text-slate-900">{deleteTarget.session.date}</strong>.
+                </p>
+              )}
+            </div>
+
+            <div className="px-4 py-3 bg-slate-50 border-t border-slate-200 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                disabled={isDeletingRecords}
+                onClick={() => setDeleteTarget(null)}
+                className="px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-200 rounded-md cursor-pointer disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isDeletingRecords}
+                onClick={() => void handleConfirmDeleteTarget()}
+                className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 rounded-md shadow-xs cursor-pointer disabled:opacity-50"
+              >
+                {isDeletingRecords && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                <span>
+                  {isDeletingRecords
+                    ? 'Deleting...'
+                    : deleteTarget.mode === 'all'
+                    ? 'Delete All Records'
+                    : 'Delete Session'}
+                </span>
+              </button>
             </div>
           </div>
         </div>

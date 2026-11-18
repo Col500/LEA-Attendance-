@@ -7,6 +7,7 @@ export const SESSIONS_STORAGE_KEY = 'lea_attendance_sessions_v1';
 export const DRAFTS_STORAGE_KEY = 'lea_attendance_drafts_v1';
 
 export const CLEAN_SLATE_VERSION_KEY = 'lea_clean_slate_v2';
+export const CLEAN_ATTENDANCE_SLATE_VERSION_KEY = 'lea_clean_attendance_v1';
 
 export const initialSampleClasses: ClassItem[] = [];
 
@@ -30,6 +31,19 @@ function clearLegacyMockBrowserSeedOnce(): void {
     if (rawSessions && rawSessions.includes('"ses-2026-10-09-p4a"')) {
       localStorage.removeItem(SESSIONS_STORAGE_KEY);
     }
+  } catch {
+    // Ignore storage access errors
+  }
+}
+
+function clearSavedAttendanceRecordsOnce(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    if (localStorage.getItem(CLEAN_ATTENDANCE_SLATE_VERSION_KEY) === '1') return;
+    localStorage.setItem(CLEAN_ATTENDANCE_SLATE_VERSION_KEY, '1');
+    localStorage.removeItem(SESSIONS_STORAGE_KEY);
+    localStorage.removeItem(DRAFTS_STORAGE_KEY);
+    localStorage.removeItem('lea_register_test_outcomes_v1');
   } catch {
     // Ignore storage access errors
   }
@@ -104,6 +118,7 @@ function sanitizeSessionForStorage(session: AttendanceSession): AttendanceSessio
 
 export function getStoredAttendanceSessions(): AttendanceSession[] {
   clearLegacyMockBrowserSeedOnce();
+  clearSavedAttendanceRecordsOnce();
   try {
     const raw = localStorage.getItem(SESSIONS_STORAGE_KEY);
     if (raw) {
@@ -145,12 +160,30 @@ export function updateStoredAttendanceSession(updatedSession: AttendanceSession)
   return updated;
 }
 
+export function deleteStoredAttendanceSession(sessionId: string): AttendanceSession[] {
+  const updated = getStoredAttendanceSessions().filter((s) => s.id !== sessionId);
+  saveStoredAttendanceSessions(updated);
+  return updated;
+}
+
+export function clearAllStoredAttendanceRecords(): void {
+  try {
+    localStorage.setItem(CLEAN_ATTENDANCE_SLATE_VERSION_KEY, '1');
+    localStorage.removeItem(SESSIONS_STORAGE_KEY);
+    localStorage.removeItem(DRAFTS_STORAGE_KEY);
+    localStorage.removeItem('lea_register_test_outcomes_v1');
+  } catch (err) {
+    console.error('Error clearing attendance records from localStorage', err);
+  }
+}
+
 export function resetToSampleSessions(): AttendanceSession[] {
   saveStoredAttendanceSessions(sampleAttendanceSessions);
   return sampleAttendanceSessions;
 }
 
 export function getStoredSessionDrafts(): AttendanceSessionDraft[] {
+  clearSavedAttendanceRecordsOnce();
   try {
     const raw = localStorage.getItem(DRAFTS_STORAGE_KEY);
     if (raw) {
