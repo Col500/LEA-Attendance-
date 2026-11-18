@@ -1,0 +1,6 @@
+{
+  "name": "LEA Attendance Assistant",
+  "description": "Digitization and records management system for physical attendance registers at L.E.A. Primary School, Wuse III, Zone 6, Abuja.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
