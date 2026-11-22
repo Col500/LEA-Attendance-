@@ -19,10 +19,12 @@ import {
 } from 'lucide-react';
 import { StatCard } from '../components/StatCard';
 import { AttendanceAnalyticsCharts } from '../components/AttendanceAnalyticsCharts';
+import { StarredPupilsCard } from '../components/StarredPupilsCard';
 import { schoolInfo } from '../data/mockData';
 import {
   AttendanceSession,
   ClassItem,
+  NonSchoolGapRecord,
   ReviewStatus,
   SchoolInfo,
   StaffRole,
@@ -35,6 +37,8 @@ import {
   DashboardAnalyticsFilter,
   TimeframeMode
 } from '../services/dashboardAnalytics';
+import { computeStarredStudentSummaries } from '../services/studentTrackingMetrics';
+import { buildNonSchoolDateMap, getDefaultSchoolDate } from '../services/schoolCalendarGaps';
 
 interface DashboardPageProps {
   students: Student[];
@@ -44,6 +48,9 @@ interface DashboardPageProps {
   isSupabaseLive?: boolean;
   userRole?: StaffRole | null;
   canScan?: boolean;
+  starredStudentIds?: string[];
+  nonSchoolGaps?: NonSchoolGapRecord[];
+  onToggleStarStudent?: (studentId: string) => void;
   onNavigateToScan: () => void;
   onNavigateToRecords: () => void;
   onNavigateToReports?: () => void;
@@ -73,6 +80,9 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
   school,
   userRole,
   canScan = true,
+  starredStudentIds = [],
+  nonSchoolGaps = [],
+  onToggleStarStudent,
   onNavigateToScan,
   onNavigateToRecords,
   onNavigateToReports,
@@ -192,6 +202,26 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
 
   const completionPercent =
     classes.length > 0 ? Math.round((submittedClassesCount / classes.length) * 100) : 0;
+
+  const todaySchoolDate = getDefaultSchoolDate();
+  const nonSchoolDateMap = useMemo(
+    () => buildNonSchoolDateMap(sessions, nonSchoolGaps),
+    [sessions, nonSchoolGaps]
+  );
+  const todayNonSchoolLabel = nonSchoolDateMap.get(todaySchoolDate) || null;
+
+  const starredSummaries = useMemo(
+    () =>
+      computeStarredStudentSummaries({
+        students,
+        classes,
+        sessions,
+        starredIds: starredStudentIds,
+        targetDate: todaySchoolDate,
+        nonSchoolGaps
+      }),
+    [students, classes, sessions, starredStudentIds, todaySchoolDate, nonSchoolGaps]
+  );
 
   const renderStatus = (status: ReviewStatus) => {
     switch (status) {
@@ -653,8 +683,22 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
         )}
       </section>
 
+      {/* Starred Pupils Numeric Summary (Direct Register Only — No Calendar) */}
+      <StarredPupilsCard
+        summaries={starredSummaries}
+        title="Starred Pupils"
+        subtitle="Today's direct register status & cumulative counts (summary note scans excluded)"
+        onUnstar={onToggleStarStudent}
+        onManageStudents={onNavigateToStudents}
+      />
+
       {/* Today's Class Submission Progress */}
       <div className="bg-white rounded-lg border border-slate-200 p-5 shadow-xs">
+        {todayNonSchoolLabel && (
+          <div className="mb-3 px-3 py-2 rounded-lg bg-amber-50 border border-amber-200 text-xs font-medium text-amber-900">
+            Non-School Day Recorded ({todaySchoolDate}): <strong>{todayNonSchoolLabel}</strong> — excluded from attendance percentages.
+          </div>
+        )}
         <div className="flex items-center justify-between pb-3 border-b border-slate-100">
           <div>
             <h3 className="text-base font-bold text-slate-900">

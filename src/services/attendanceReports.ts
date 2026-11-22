@@ -36,8 +36,10 @@ export interface AttendanceReportResult {
 export const ATTENDANCE_FORMULA_EXPLANATION =
   'Attendance % = Present / (Present + Absent) x 100 across Confirmed sessions only. BLANK / unrecorded marks are never counted as ABSENT, UNCERTAIN marks are excluded from definitive totals and denominators, and unconfirmed Draft, Flagged, or Failed sessions are omitted from official reports. Shown as N/A when Present + Absent = 0.';
 
-export function isConfirmedOfficialSession(session: Pick<AttendanceSession, 'reviewStatus'>): boolean {
-  return session.reviewStatus === 'Confirmed';
+export function isConfirmedOfficialSession(
+  session: Pick<AttendanceSession, 'reviewStatus' | 'isNonSchoolDay'>
+): boolean {
+  return session.reviewStatus === 'Confirmed' && !session.isNonSchoolDay;
 }
 
 /**

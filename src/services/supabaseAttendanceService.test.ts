@@ -4,6 +4,7 @@ import {
   createClassInSupabase,
   createStudentInSupabase,
   deleteAllAttendanceSessionsInSupabase,
+  deleteAllStudentsInSupabase,
   deleteAttendanceSessionInSupabase,
   fetchClassesFromSupabase,
   fetchConfirmedSessionsFromSupabase,
@@ -22,12 +23,18 @@ import type { AttendanceSession, Student } from '../types/attendance';
  * for adding/editing students, reloading records, atomic session confirmation,
  * duplicate draft prevention, RLS error translation, and explicit local seeding.
  */
-function createMockSupabaseHarness(options?: { authenticated?: boolean; role?: 'admin' | 'teacher' | 'viewer'; failNextRpc?: boolean }) {
+function createMockSupabaseHarness(options?: {
+  authenticated?: boolean;
+  role?: 'admin' | 'teacher' | 'viewer';
+  failNextRpc?: boolean;
+  blockAttendanceDelete?: boolean;
+}) {
   const state = {
     authenticated: options?.authenticated ?? true,
     userId: '11111111-1111-4111-8111-111111111111',
     role: options?.role ?? 'admin',
     failNextRpc: options?.failNextRpc ?? false,
+    blockAttendanceDelete: options?.blockAttendanceDelete ?? false,
     classes: [] as Array<{
       id: string;
       name: string;
@@ -135,6 +142,20 @@ function createMockSupabaseHarness(options?: { authenticated?: boolean; role?: '
             state.classes.push(row);
             return { data: row, error: null };
           }
+          if (op === 'delete') {
+            if (state.role !== 'admin') {
+              return { data: null, error: { code: '42501', message: 'row-level security policy violation' } };
+            }
+            if (state.students.length > 0) {
+              return { data: null, error: { code: '23503', message: 'foreign key violation: students reference classes' } };
+            }
+            state.classes = state.classes.filter((c) => {
+              if (filterEq.id !== undefined && c.id === filterEq.id) return false;
+              if (filterNeq.id !== undefined && c.id !== filterNeq.id) return false;
+              return true;
+            });
+            return { data: null, error: null };
+          }
         }
 
         if (table === 'students') {
@@ -174,6 +195,20 @@ function createMockSupabaseHarness(options?: { authenticated?: boolean; role?: '
             state.students[idx] = { ...state.students[idx], ...payload, updated_at: now };
             return { data: state.students[idx], error: null };
           }
+          if (op === 'delete') {
+            if (state.role !== 'admin') {
+              return { data: null, error: { code: '42501', message: 'row-level security policy violation' } };
+            }
+            if (state.records.some((r) => r.student_id !== null)) {
+              return { data: null, error: { code: '23503', message: 'foreign key violation: attendance_records reference students ON DELETE RESTRICT' } };
+            }
+            state.students = state.students.filter((s) => {
+              if (filterEq.id !== undefined && s.id === filterEq.id) return false;
+              if (filterNeq.id !== undefined && s.id !== filterNeq.id) return false;
+              return true;
+            });
+            return { data: null, error: null };
+          }
         }
 
         if (table === 'attendance_sessions') {
@@ -204,6 +239,10 @@ function createMockSupabaseHarness(options?: { authenticated?: boolean; role?: '
             if (state.role !== 'admin') {
               return { data: null, error: { code: '42501', message: 'row-level security policy violation' } };
             }
+            if (state.blockAttendanceDelete) {
+              // Simulate missing migration 003 RLS DELETE policy (silently affects 0 rows)
+              return { data: null, error: null };
+            }
             const remaining = state.sessions.filter((s) => {
               if (filterEq.id !== undefined && s.id === filterEq.id) return false;
               if (filterNeq.id !== undefined && s.id !== filterNeq.id) return false;
@@ -215,6 +254,33 @@ function createMockSupabaseHarness(options?: { authenticated?: boolean; role?: '
             state.sessions = remaining;
             state.records = state.records.filter((r) => !removedIds.has(r.attendance_session_id));
             return { data: null, error: null };
+          }
+        }
+
+        if (table === 'attendance_records') {
+          if (op === 'select') {
+            return { data: [...state.records], error: null };
+          }
+          if (op === 'delete') {
+            if (state.role !== 'admin') {
+              return { data: null, error: { code: '42501', message: 'row-level security policy violation' } };
+            }
+            if (state.blockAttendanceDelete) {
+              return { data: null, error: null };
+            }
+            state.records = state.records.filter((r) => {
+              if (filterEq.id !== undefined && r.id === filterEq.id) return false;
+              if (filterNeq.id !== undefined && r.id !== filterNeq.id) return false;
+              return true;
+            });
+            return { data: null, error: null };
+          }
+          if (op === 'update') {
+            if (state.role !== 'admin') {
+              return { data: null, error: { code: '42501', message: 'row-level security policy violation' } };
+            }
+            state.records = state.records.map((r) => ({ ...r, ...payload }));
+            return { data: state.records, error: null };
           }
         }
 
@@ -249,6 +315,9 @@ function createMockSupabaseHarness(options?: { authenticated?: boolean; role?: '
         },
         then(onFulfilled: any, onRejected: any) {
           return exec('many').then(onFulfilled, onRejected);
+        },
+        limit() {
+          return exec('many');
         },
         order() {
           return {
@@ -538,6 +607,92 @@ async function runTests() {
   assert.equal(harness.state.records.length, 0);
   assert.equal(harness.state.students.length >= 1, true, 'Enrolled students must stay intact');
   console.log('✓ Test 6 passed: Admin-only attendance record deletion preserves enrolled roster');
+
+  // 7. Admin-only full pupil records deletion (handles ON DELETE RESTRICT by clearing sessions first)
+  await assert.rejects(
+    () => deleteAllStudentsInSupabase(viewerHarness.client),
+    /Read-only access|Row Level Security/
+  );
+  // Confirm a session referencing students so ON DELETE RESTRICT is exercised
+  const thirdDraft = validateAndBuildSessionDraft(validMultiWeekSample, {
+    classId: createdClass.id,
+    className: createdClass.name,
+    attendancePeriod: '2026-10-17 (Morning Session)',
+    sourceImageMetadata: {
+      fileName: 'reg3.jpg',
+      rotation: 0,
+      capturedAt: new Date().toISOString(),
+      modelUsed: 'gemini-3.8-flash'
+    },
+    classStudents: classRoster
+  });
+  await confirmAttendanceSessionInSupabase(harness.client, {
+    draft: thirdDraft,
+    sessionSummary: { ...summary, id: 'temp-session-3', date: '2026-10-17', sourceDraftId: thirdDraft.id },
+    classId: createdClass.id,
+    selectedDate: '2026-10-17',
+    modelUsed: 'gemini-3.8-flash'
+  });
+  assert.equal(harness.state.sessions.length, 1);
+  assert.equal(harness.state.students.length >= 1, true);
+
+  // Delete all pupils while keeping classes intact
+  await deleteAllStudentsInSupabase(harness.client);
+  assert.equal(harness.state.students.length, 0, 'All pupil records must be deleted');
+  assert.equal(harness.state.sessions.length, 0, 'Linked attendance sessions must be cleared first');
+  assert.equal(harness.state.classes.length >= 1, true, 'Classes must remain intact by default');
+
+  // Delete all pupils + classes when alsoDeleteClasses is true
+  await deleteAllStudentsInSupabase(harness.client, { alsoDeleteClasses: true });
+  assert.equal(harness.state.classes.length, 0, 'Classes must be cleared when alsoDeleteClasses is true');
+  console.log('✓ Test 7 passed: Admin-only pupil records reset clears FK-linked sessions safely and supports optional class reset');
+
+  // 8. Even if migration 003 DELETE policy is NOT applied on attendance_sessions/records,
+  // deleteAllStudentsInSupabase unlinks attendance_records.student_id = null and deletes all students without FK error 23503!
+  const lockedHarness = createMockSupabaseHarness({
+    authenticated: true,
+    role: 'admin',
+    blockAttendanceDelete: true
+  });
+  const lockedCls = await createClassInSupabase(lockedHarness.client, { name: 'Primary 2A' });
+  const lockedStudent = await createStudentInSupabase(lockedHarness.client, {
+    classId: lockedCls.id,
+    studentNumber: 1,
+    fullName: 'Amina Yusuf',
+    active: true
+  });
+  const lockedDraft = validateAndBuildSessionDraft(validMultiWeekSample, {
+    classId: lockedCls.id,
+    className: lockedCls.name,
+    attendancePeriod: '2026-10-18 (Morning Session)',
+    sourceImageMetadata: {
+      fileName: 'reg4.jpg',
+      rotation: 0,
+      capturedAt: new Date().toISOString(),
+      modelUsed: 'gemini-3.8-flash'
+    },
+    classStudents: [lockedStudent]
+  });
+  await confirmAttendanceSessionInSupabase(lockedHarness.client, {
+    draft: lockedDraft,
+    sessionSummary: { ...summary, id: 'temp-session-4', date: '2026-10-18', sourceDraftId: lockedDraft.id },
+    classId: lockedCls.id,
+    selectedDate: '2026-10-18',
+    modelUsed: 'gemini-3.8-flash'
+  });
+  assert.equal(lockedHarness.state.students.length, 1);
+  assert.equal(lockedHarness.state.records.some((r) => r.student_id === lockedStudent.id), true);
+
+  const lockedResetRes = await deleteAllStudentsInSupabase(lockedHarness.client);
+  assert.equal(lockedResetRes.studentsDeleted, true);
+  assert.equal(lockedResetRes.sessionsCleared, false);
+  assert.equal(lockedHarness.state.students.length, 0, 'All pupils must be deleted even without migration 003');
+  assert.equal(
+    lockedHarness.state.records.every((r) => r.student_id === null),
+    true,
+    'Linked attendance_records.student_id must be unlinked to null'
+  );
+  console.log('✓ Test 8 passed: Pupil reset succeeds via student_id unlink fallback without FK 23503 error when migration 003 is absent');
 
   console.log('\nALL SUPABASE PERSISTENCE & SAFETY TESTS PASSED.');
 }

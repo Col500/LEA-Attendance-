@@ -177,6 +177,20 @@ export function clearAllStoredAttendanceRecords(): void {
   }
 }
 
+export function clearAllStoredPupilRecords(options?: { alsoDeleteClasses?: boolean }): void {
+  try {
+    localStorage.removeItem(STUDENTS_STORAGE_KEY);
+    localStorage.removeItem('lea_starred_students_v1');
+    if (options?.alsoDeleteClasses) {
+      localStorage.removeItem(CLASSES_STORAGE_KEY);
+      localStorage.removeItem('lea_class_workflow_history_v1');
+    }
+    clearAllStoredAttendanceRecords();
+  } catch (err) {
+    console.error('Error clearing pupil records from localStorage', err);
+  }
+}
+
 export function resetToSampleSessions(): AttendanceSession[] {
   saveStoredAttendanceSessions(sampleAttendanceSessions);
   return sampleAttendanceSessions;

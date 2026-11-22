@@ -50,14 +50,30 @@ export const StaffSignInModal: React.FC<StaffSignInModalProps> = ({
     setIsBusy(true);
     setMessage(null);
     try {
-      const { error } = await client.auth.signInWithPassword({
+      let { error } = await client.auth.signInWithPassword({
         email: emailToUse,
         password: authPassword
       });
+
+      // Mobile copy-paste often appends a trailing space to passwords; retry cleanly with trimmed password
+      if (
+        error &&
+        (error.message || '').toLowerCase().includes('invalid login credentials') &&
+        authPassword !== authPassword.trim()
+      ) {
+        const retryRes = await client.auth.signInWithPassword({
+          email: emailToUse,
+          password: authPassword.trim()
+        });
+        error = retryRes.error;
+      }
+
       if (error) {
         const lower = (error.message || '').toLowerCase();
         if (lower.includes('invalid login credentials')) {
-          throw new Error('Incorrect username/email or password. Please verify your credentials.');
+          throw new Error(
+            'Incorrect username/email or password. Check for typos or verify this account password in Supabase Authentication → Users.'
+          );
         }
         throw error;
       }

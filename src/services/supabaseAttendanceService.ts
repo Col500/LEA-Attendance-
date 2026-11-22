@@ -433,6 +433,18 @@ export async function confirmAttendanceSessionInSupabase(
     sessionSummary.reviewStatus === 'Flagged' ||
     draft.cells.some((c) => c.status === 'UNCERTAIN' || !c.studentId);
 
+  const encodedNotes = encodeSessionMetaNotes(sessionSummary.notes, {
+    captureMode: sessionSummary.captureMode || 'register',
+    isNonSchoolDay: sessionSummary.isNonSchoolDay,
+    nonSchoolReason: sessionSummary.nonSchoolReason,
+    summaryPresentCount:
+      sessionSummary.captureMode === 'summary' ? sessionSummary.presentCount : undefined,
+    summaryAbsentCount:
+      sessionSummary.captureMode === 'summary' ? sessionSummary.absentCount : undefined,
+    summaryTotalEnrolled:
+      sessionSummary.captureMode === 'summary' ? sessionSummary.totalEnrolled : undefined
+  });
+
   const { data, error } = await client.rpc('confirm_attendance_session', {
     p_class_id: classId,
     p_attendance_date: /^\d{4}-\d{2}-\d{2}$/.test(selectedDate) ? selectedDate : null,
@@ -440,7 +452,7 @@ export async function confirmAttendanceSessionInSupabase(
     p_source_type: normalizedSourceType,
     p_status: hasUnresolved ? 'FLAGGED' : 'CONFIRMED',
     p_source_draft_id: draft.id,
-    p_notes: sessionSummary.notes || null,
+    p_notes: encodedNotes,
     p_records: recordsPayload
   });
 
@@ -462,6 +474,140 @@ export async function confirmAttendanceSessionInSupabase(
     sourceDraftId: draft.id,
     persistenceTarget: 'supabase',
     verifiedBy: `${sessionSummary.recordedBy} (Verified & Saved to Supabase)`
+  };
+}
+
+interface EncodedSessionMeta {
+  captureMode?: 'register' | 'summary';
+  isNonSchoolDay?: boolean;
+  nonSchoolReason?: string;
+  summaryPresentCount?: number;
+  summaryAbsentCount?: number;
+  summaryTotalEnrolled?: number;
+}
+
+const LEA_META_PREFIX = '[LEA_META:';
+
+export function encodeSessionMetaNotes(
+  rawNotes: string | undefined | null,
+  meta: EncodedSessionMeta
+): string | null {
+  const cleanText = (rawNotes || '')
+    .replace(/\s*\[LEA_META:\{.*?\}\]\s*/g, '')
+    .trim();
+  const hasSpecialMeta =
+    meta.captureMode === 'summary' ||
+    Boolean(meta.isNonSchoolDay) ||
+    Boolean(meta.nonSchoolReason);
+  if (!hasSpecialMeta) {
+    return cleanText || null;
+  }
+  const compactMeta: EncodedSessionMeta = {};
+  if (meta.captureMode) compactMeta.captureMode = meta.captureMode;
+  if (meta.isNonSchoolDay) compactMeta.isNonSchoolDay = true;
+  if (meta.nonSchoolReason) compactMeta.nonSchoolReason = meta.nonSchoolReason;
+  if (typeof meta.summaryPresentCount === 'number') {
+    compactMeta.summaryPresentCount = meta.summaryPresentCount;
+  }
+  if (typeof meta.summaryAbsentCount === 'number') {
+    compactMeta.summaryAbsentCount = meta.summaryAbsentCount;
+  }
+  if (typeof meta.summaryTotalEnrolled === 'number') {
+    compactMeta.summaryTotalEnrolled = meta.summaryTotalEnrolled;
+  }
+  const tag = `${LEA_META_PREFIX}${JSON.stringify(compactMeta)}]`;
+  return cleanText ? `${cleanText} ${tag}` : tag;
+}
+
+export function decodeSessionMetaNotes(rawNotes: string | null | undefined): {
+  cleanNotes: string | undefined;
+  meta: EncodedSessionMeta;
+} {
+  if (!rawNotes) return { cleanNotes: undefined, meta: {} };
+  const idx = rawNotes.indexOf(LEA_META_PREFIX);
+  if (idx === -1) {
+    return { cleanNotes: rawNotes.trim() || undefined, meta: {} };
+  }
+  const endIdx = rawNotes.indexOf(']', idx);
+  if (endIdx === -1) {
+    return { cleanNotes: rawNotes.trim() || undefined, meta: {} };
+  }
+  const jsonSlice = rawNotes.slice(idx + LEA_META_PREFIX.length, endIdx);
+  let parsed: EncodedSessionMeta = {};
+  try {
+    parsed = JSON.parse(jsonSlice) as EncodedSessionMeta;
+  } catch {
+    parsed = {};
+  }
+  const remaining = `${rawNotes.slice(0, idx)} ${rawNotes.slice(endIdx + 1)}`.trim();
+  return {
+    cleanNotes: remaining || undefined,
+    meta: parsed
+  };
+}
+
+/**
+ * Persists a Summary Note scan or Confirmed Non-School Day session into Supabase
+ * without inserting fabricated pupil-level attendance rows.
+ */
+export async function confirmSummaryOrNonSchoolSessionInSupabase(
+  client: DbClient,
+  params: {
+    sessionSummary: AttendanceSession;
+    classId: string;
+  }
+): Promise<AttendanceSession> {
+  await requireValidAdminSession(client);
+  const { sessionSummary, classId } = params;
+
+  const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(classId);
+  if (!isUuid) {
+    throw new Error(
+      'Selected class does not have a valid database UUID yet. Migrate local classes/students to Supabase first in Settings.'
+    );
+  }
+
+  const encodedNotes = encodeSessionMetaNotes(sessionSummary.notes, {
+    captureMode: sessionSummary.captureMode || 'summary',
+    isNonSchoolDay: sessionSummary.isNonSchoolDay,
+    nonSchoolReason: sessionSummary.nonSchoolReason,
+    summaryPresentCount: sessionSummary.presentCount,
+    summaryAbsentCount: sessionSummary.absentCount,
+    summaryTotalEnrolled: sessionSummary.totalEnrolled
+  });
+
+  const draftKey =
+    sessionSummary.sourceDraftId ||
+    `summary-${classId.slice(0, 8)}-${sessionSummary.date}-${Date.now()}`;
+
+  const { data, error } = await client.rpc('confirm_attendance_session', {
+    p_class_id: classId,
+    p_attendance_date: /^\d{4}-\d{2}-\d{2}$/.test(sessionSummary.date) ? sessionSummary.date : null,
+    p_attendance_period: `${sessionSummary.date} (${sessionSummary.isNonSchoolDay ? 'Non-School Day' : 'Summary Note'})`,
+    p_source_type: 'google-cloud-vision',
+    p_status: 'CONFIRMED',
+    p_source_draft_id: draftKey,
+    p_notes: encodedNotes,
+    p_records: []
+  });
+
+  if (error || !data) {
+    throw new Error(
+      formatSupabaseError(
+        error,
+        'Failed to save summary attendance session to Supabase.'
+      )
+    );
+  }
+
+  const savedRow = data as { id: string };
+  return {
+    ...sessionSummary,
+    id: savedRow.id,
+    classId,
+    sourceDraftId: draftKey,
+    persistenceTarget: 'supabase',
+    verifiedBy: `${sessionSummary.recordedBy} (Saved to Supabase)`
   };
 }
 
@@ -556,8 +702,20 @@ function mapJoinedSessionRow(row: DbAttendanceSessionJoinedRow): AttendanceSessi
       };
     });
 
-  const presentCount = records.filter((r) => r.status === 'PRESENT').length;
-  const absentCount = records.filter((r) => r.status === 'ABSENT').length;
+  const { cleanNotes, meta } = decodeSessionMetaNotes(row.notes);
+  const isSummary = meta.captureMode === 'summary';
+  const presentCount =
+    isSummary && typeof meta.summaryPresentCount === 'number'
+      ? meta.summaryPresentCount
+      : records.filter((r) => r.status === 'PRESENT').length;
+  const absentCount =
+    isSummary && typeof meta.summaryAbsentCount === 'number'
+      ? meta.summaryAbsentCount
+      : records.filter((r) => r.status === 'ABSENT').length;
+  const totalEnrolled =
+    isSummary && typeof meta.summaryTotalEnrolled === 'number'
+      ? meta.summaryTotalEnrolled
+      : studentBuckets.size;
 
   return {
     id: row.id,
@@ -566,16 +724,19 @@ function mapJoinedSessionRow(row: DbAttendanceSessionJoinedRow): AttendanceSessi
     classGrade: row.classes?.name || 'Class',
     term: 'First Term',
     sessionYear: row.attendance_period,
-    totalEnrolled: studentBuckets.size,
+    totalEnrolled,
     presentCount,
     absentCount,
     blankCount,
     uncertainCount,
     unmappedCount,
     reviewStatus: mapDbSessionStatus(row.status),
+    captureMode: meta.captureMode || 'register',
+    isNonSchoolDay: Boolean(meta.isNonSchoolDay),
+    nonSchoolReason: meta.nonSchoolReason,
     recordedBy: row.profiles?.display_name || 'School Staff',
     verifiedBy: row.confirmed_at ? 'Confirmed in Supabase PostgreSQL' : undefined,
-    notes: row.notes || undefined,
+    notes: cleanNotes,
     sourceDraftId: row.source_draft_id || undefined,
     persistenceTarget: 'supabase',
     entries,
@@ -697,6 +858,8 @@ export async function fetchAttendanceSessionsFiltered(
   return ((data || []) as unknown as DbAttendanceSessionJoinedRow[]).map((row) => {
     const recs = row.attendance_records || [];
     const distinctStudents = new Set(recs.map((r) => r.student_id || r.id));
+    const { cleanNotes, meta } = decodeSessionMetaNotes(row.notes);
+    const isSummary = meta.captureMode === 'summary';
     return {
       id: row.id,
       classId: row.class_id,
@@ -704,16 +867,28 @@ export async function fetchAttendanceSessionsFiltered(
       classGrade: row.classes?.name || 'Class',
       term: 'First Term',
       sessionYear: row.attendance_period,
-      totalEnrolled: distinctStudents.size,
-      presentCount: recs.filter((r) => r.status === 'PRESENT').length,
-      absentCount: recs.filter((r) => r.status === 'ABSENT').length,
+      totalEnrolled:
+        isSummary && typeof meta.summaryTotalEnrolled === 'number'
+          ? meta.summaryTotalEnrolled
+          : distinctStudents.size,
+      presentCount:
+        isSummary && typeof meta.summaryPresentCount === 'number'
+          ? meta.summaryPresentCount
+          : recs.filter((r) => r.status === 'PRESENT').length,
+      absentCount:
+        isSummary && typeof meta.summaryAbsentCount === 'number'
+          ? meta.summaryAbsentCount
+          : recs.filter((r) => r.status === 'ABSENT').length,
       blankCount: recs.filter((r) => r.status === 'BLANK').length,
       uncertainCount: recs.filter((r) => r.status === 'UNCERTAIN').length,
       unmappedCount: recs.filter((r) => !r.student_id).length,
       reviewStatus: mapDbSessionStatus(row.status),
+      captureMode: meta.captureMode || 'register',
+      isNonSchoolDay: Boolean(meta.isNonSchoolDay),
+      nonSchoolReason: meta.nonSchoolReason,
       recordedBy: row.profiles?.display_name || 'School Staff',
       verifiedBy: row.confirmed_at ? 'Confirmed in Supabase PostgreSQL' : undefined,
-      notes: row.notes || undefined,
+      notes: cleanNotes,
       sourceDraftId: row.source_draft_id || undefined,
       persistenceTarget: 'supabase'
     };
@@ -814,6 +989,13 @@ export async function deleteAllAttendanceSessionsInSupabase(
   client: DbClient
 ): Promise<void> {
   await requireValidAdminSession(client);
+
+  // Attempt to clear child attendance_records first in case cascade policy requires explicit delete
+  await client
+    .from('attendance_records')
+    .delete()
+    .neq('id', '00000000-0000-0000-0000-000000000000');
+
   const { error } = await client
     .from('attendance_sessions')
     .delete()
@@ -822,6 +1004,131 @@ export async function deleteAllAttendanceSessionsInSupabase(
   if (error) {
     throw new Error(formatSupabaseError(error, 'Failed to delete all saved attendance records from database.'));
   }
+
+  // Verify rows were actually deleted (PostgreSQL RLS silently deletes 0 rows if DELETE policy is missing)
+  const { data: remaining } = await client
+    .from('attendance_sessions')
+    .select('id')
+    .limit(1);
+
+  if (Array.isArray(remaining) && remaining.length > 0) {
+    throw new Error(
+      'Database Row-Level Security blocked deleting attendance sessions. Run supabase/migrations/003_admin_delete_attendance.sql in your Supabase SQL Editor, then try again.'
+    );
+  }
+}
+
+export interface DeleteAllStudentsResult {
+  studentsDeleted: boolean;
+  sessionsCleared: boolean;
+  classesDeleted: boolean;
+}
+
+/**
+ * Deletes all pupil records from the Supabase `students` table (Admin-only).
+ * Handles `attendance_records.student_id ON DELETE RESTRICT` gracefully:
+ * 1. First attempts to delete saved attendance records & sessions.
+ * 2. If attendance records remain (e.g., if migration 003 DELETE policy has not yet been applied
+ *    in Supabase), unlinks `attendance_records.student_id = null` (already allowed by migration 002
+ *    admin UPDATE policy) so deleting `public.students` succeeds immediately without FK error 23503.
+ * 3. Optionally deletes all classes when `alsoDeleteClasses` is true.
+ */
+export async function deleteAllStudentsInSupabase(
+  client: DbClient,
+  options?: { alsoDeleteClasses?: boolean }
+): Promise<DeleteAllStudentsResult> {
+  await requireValidAdminSession(client);
+
+  // Step 1: Try to clear attendance_records and attendance_sessions
+  const { data: existingSessions, error: checkErr } = await client
+    .from('attendance_sessions')
+    .select('id')
+    .limit(1);
+
+  if (checkErr) {
+    throw new Error(
+      formatSupabaseError(checkErr, 'Failed to inspect existing attendance sessions before deleting pupils.')
+    );
+  }
+
+  if (Array.isArray(existingSessions) && existingSessions.length > 0) {
+    await client
+      .from('attendance_records')
+      .delete()
+      .neq('id', '00000000-0000-0000-0000-000000000000');
+
+    await client
+      .from('attendance_sessions')
+      .delete()
+      .neq('id', '00000000-0000-0000-0000-000000000000');
+  }
+
+  // Step 2: Check if any attendance_records still exist and reference students
+  const { data: leftoverRecords } = await client
+    .from('attendance_records')
+    .select('id')
+    .limit(1);
+
+  if (Array.isArray(leftoverRecords) && leftoverRecords.length > 0) {
+    // Unlink student_id -> null (allowed by migration 002 records_update_admin_only)
+    // so PostgreSQL ON DELETE RESTRICT on students(id) is released even before migration 003 is run.
+    const { error: unlinkErr } = await client
+      .from('attendance_records')
+      .update({ student_id: null })
+      .neq('id', '00000000-0000-0000-0000-000000000000');
+
+    if (unlinkErr) {
+      throw new Error(
+        formatSupabaseError(
+          unlinkErr,
+          'Could not unlink attendance records referencing pupils. Run supabase/migrations/003_admin_delete_attendance.sql in Supabase SQL Editor and retry.'
+        )
+      );
+    }
+  }
+
+  // Step 3: Delete all pupil records from public.students
+  const { error: studentErr } = await client
+    .from('students')
+    .delete()
+    .neq('id', '00000000-0000-0000-0000-000000000000');
+
+  if (studentErr) {
+    throw new Error(formatSupabaseError(studentErr, 'Failed to delete all pupil records from database.'));
+  }
+
+  const { data: leftoverSessions } = await client
+    .from('attendance_sessions')
+    .select('id')
+    .limit(1);
+  const sessionsCleared = !Array.isArray(leftoverSessions) || leftoverSessions.length === 0;
+
+  let classesDeleted = false;
+  if (options?.alsoDeleteClasses) {
+    if (!sessionsCleared) {
+      throw new Error(
+        'All pupil records were deleted, but classes could not be deleted because saved attendance sessions are still locked by Supabase RLS. Run supabase/migrations/003_admin_delete_attendance.sql in your Supabase SQL Editor to delete old sessions and classes.'
+      );
+    }
+
+    const { error: classErr } = await client
+      .from('classes')
+      .delete()
+      .neq('id', '00000000-0000-0000-0000-000000000000');
+
+    if (classErr) {
+      throw new Error(
+        formatSupabaseError(classErr, 'All pupil records were deleted, but failed to delete classes from database.')
+      );
+    }
+    classesDeleted = true;
+  }
+
+  return {
+    studentsDeleted: true,
+    sessionsCleared,
+    classesDeleted
+  };
 }
 
 /**

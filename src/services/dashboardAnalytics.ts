@@ -243,7 +243,9 @@ export function computeDashboardAnalytics(params: {
 }): DashboardAnalyticsResult {
   const { sessions, classes, students, filter, school } = params;
 
-  const validSessions = sessions.filter((s) => s.reviewStatus !== 'Failed');
+  const validSessions = sessions.filter(
+    (s) => s.reviewStatus !== 'Failed' && !s.isNonSchoolDay
+  );
   const selectedSet = new Set(filter.selectedClassIds);
   const hasClassFilter = selectedSet.size > 0;
 

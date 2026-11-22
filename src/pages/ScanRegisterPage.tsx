@@ -20,7 +20,10 @@ import {
   FlaskConical,
   Trash2,
   WifiOff,
-  ScanLine
+  ScanLine,
+  NotebookPen,
+  CalendarOff,
+  ArrowRight
 } from 'lucide-react';
 import {
   RegisterFormatMode,
@@ -32,10 +35,18 @@ import {
   AttendanceSessionDraft,
   Student,
   NormalizedCropBox,
-  RegisterTestOutcome
+  RegisterTestOutcome,
+  ScanCaptureMode,
+  DefaultScanModePreference,
+  NonSchoolGapRecord,
+  ClassWorkflowHistoryEntry,
+  DetectedHolidayAnnotation
 } from '../types/attendance';
 import { TranscriptionReviewView } from '../components/TranscriptionReviewView';
 import { RegisterImageCropperModal } from '../components/RegisterImageCropperModal';
+import { GapLabelPromptModal } from '../components/GapLabelPromptModal';
+import { SummaryNoteScanPanel } from '../components/SummaryNoteScanPanel';
+import { StarredPupilsCard } from '../components/StarredPupilsCard';
 import {
   createValidationTestSamples,
   validateAndBuildSessionDraft
@@ -71,6 +82,22 @@ import {
   DuplicateSessionMatch,
   findPotentialDuplicateSessions
 } from '../services/duplicateSession';
+import {
+  DetectedWeekdayGap,
+  detectUnlabeledWeekdayGap,
+  formatReadableDate,
+  getDefaultSchoolDate,
+  getStoredDismissedGapKeys,
+  getTargetWeekdayInfo,
+  isWeekendDate,
+  saveStoredDismissedGapKeys
+} from '../services/schoolCalendarGaps';
+import {
+  appendClassToWorkflowHistory,
+  NextClassSuggestion,
+  suggestNextClassToScan
+} from '../services/workflowPreferences';
+import { computeStarredStudentSummaries } from '../services/studentTrackingMetrics';
 import { getSupabaseClient } from '../lib/supabaseClient';
 import { checkDuplicateSessionsInSupabase } from '../services/supabaseAttendanceService';
 import { isNetworkOrOfflineError, useOnlineStatus } from '../hooks/useOnlineStatus';
@@ -83,6 +110,17 @@ interface ScanRegisterPageProps {
   students?: Student[];
   existingSessions?: AttendanceSession[];
   isSupabaseLive?: boolean;
+  defaultScanMode?: DefaultScanModePreference;
+  onChangeDefaultScanMode?: (pref: DefaultScanModePreference) => void;
+  nonSchoolGaps?: NonSchoolGapRecord[];
+  onAddNonSchoolGap?: (params: {
+    startDate: string;
+    endDate: string;
+    label: string;
+    source: NonSchoolGapRecord['source'];
+  }) => NonSchoolGapRecord | void;
+  starredStudentIds?: string[];
+  workflowHistory?: ClassWorkflowHistoryEntry[];
   onInspectExistingSession?: (session: AttendanceSession) => void;
   onSaveConfirmedSession?: (
     session: AttendanceSession,
@@ -114,12 +152,42 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
   students = [],
   existingSessions = [],
   isSupabaseLive = false,
+  defaultScanMode = 'ask',
+  onChangeDefaultScanMode,
+  nonSchoolGaps = [],
+  onAddNonSchoolGap,
+  starredStudentIds = [],
+  workflowHistory = [],
   onInspectExistingSession,
   onSaveConfirmedSession,
   highlightedTarget
 }) => {
   const isOnline = useOnlineStatus();
   const activeClasses = classes;
+
+  // Dual Scan Capture Mode ('register' vs 'summary') + Default Preference Chooser
+  const [activeScanMode, setActiveScanMode] = useState<ScanCaptureMode | null>(() =>
+    defaultScanMode === 'register' || defaultScanMode === 'summary' ? defaultScanMode : null
+  );
+  const [chooserSelection, setChooserSelection] = useState<ScanCaptureMode>('register');
+  const [setChoiceAsDefault, setSetChoiceAsDefault] = useState<boolean>(false);
+  const [showSummarySwitchWarning, setShowSummarySwitchWarning] = useState<boolean>(false);
+  const [pendingSummaryDefaultFlag, setPendingSummaryDefaultFlag] = useState<boolean>(false);
+
+  // Gap Labeling & Holiday Annotation Confirmation State
+  const [dismissedGapKeys, setDismissedGapKeys] = useState<string[]>(() =>
+    getStoredDismissedGapKeys()
+  );
+  const [pendingHolidayPrompt, setPendingHolidayPrompt] = useState<{
+    annotation: DetectedHolidayAnnotation;
+    extraction: GeminiExtractionResult;
+    draft: AttendanceSessionDraft;
+    usedModelName: string;
+  } | null>(null);
+  const [holidayLabelInput, setHolidayLabelInput] = useState<string>('');
+  const [isSavingHolidayDay, setIsSavingHolidayDay] = useState<boolean>(false);
+  const [autoAdvanceToast, setAutoAdvanceToast] = useState<string | null>(null);
+  const [nextSuggestedClass, setNextSuggestedClass] = useState<NextClassSuggestion | null>(null);
 
   // Workflow explicit state machine:
   // 'empty' | 'image-selected' | 'ready-to-analyze' | 'processing' | 'review' | 'confirmed' | 'error'
@@ -134,14 +202,12 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
     billingUrl: string;
   } | null>(null);
 
-  // Register Metadata
-  const [registerMode, setRegisterMode] = useState<RegisterFormatMode>('daily');
+  // Register Metadata — Single-day rightmost-week scanning is the built-in default
+  const [registerMode] = useState<RegisterFormatMode>('daily');
   const [selectedClass, setSelectedClass] = useState<string>(() =>
     classes.length === 1 ? classes[0].name : ''
   );
-  const [selectedDate, setSelectedDate] = useState<string>(new Date().toISOString().split('T')[0]);
-  const [weeksCount, setWeeksCount] = useState<number>(4);
-  const [startingWeek, setStartingWeek] = useState<number>(1);
+  const [selectedDate, setSelectedDate] = useState<string>(() => getDefaultSchoolDate());
 
   // In-memory image state (Never persisted to localStorage)
   const [rawSourceImage, setRawSourceImage] = useState<string | null>(null);
@@ -201,6 +267,92 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
       setSelectedClass(activeClasses[0].name);
     }
   }, [activeClasses, selectedClass, highlightedTarget]);
+
+  // Keep default scan mode preference synced if updated in Settings
+  useEffect(() => {
+    if (defaultScanMode === 'register' || defaultScanMode === 'summary') {
+      setActiveScanMode((prev) => prev || defaultScanMode);
+    }
+  }, [defaultScanMode]);
+
+  // Weekend awareness & Single-Day Rightmost-Week Target Info
+  const dateIsWeekend = isWeekendDate(selectedDate);
+  const targetWeekdayInfo = getTargetWeekdayInfo(selectedDate);
+
+  // Detect any skipped school weekdays (Mon-Fri) between the last recorded date and selectedDate
+  const detectedWeekdayGap: DetectedWeekdayGap | null = React.useMemo(() => {
+    if (!activeScanMode || dateIsWeekend) return null;
+    const gap = detectUnlabeledWeekdayGap({
+      targetDate: selectedDate,
+      sessions: existingSessions,
+      existingGaps: nonSchoolGaps
+    });
+    if (!gap) return null;
+    const key = `${gap.startDate}__${gap.endDate}`;
+    if (dismissedGapKeys.includes(key)) return null;
+    return gap;
+  }, [activeScanMode, dateIsWeekend, selectedDate, existingSessions, nonSchoolGaps, dismissedGapKeys]);
+
+  const hasDirectRegisterHistory = React.useMemo(
+    () =>
+      existingSessions.some(
+        (s) => s.reviewStatus === 'Confirmed' && (s.captureMode ?? 'register') === 'register'
+      ),
+    [existingSessions]
+  );
+
+  const requestSwitchToScanMode = (nextMode: ScanCaptureMode, saveAsDefault = false) => {
+    const switchingFromRegister =
+      activeScanMode === 'register' || (activeScanMode === null && hasDirectRegisterHistory);
+    if (nextMode === 'summary' && switchingFromRegister) {
+      setPendingSummaryDefaultFlag(saveAsDefault);
+      setShowSummarySwitchWarning(true);
+      return;
+    }
+    setActiveScanMode(nextMode);
+    if (saveAsDefault && onChangeDefaultScanMode) {
+      onChangeDefaultScanMode(nextMode);
+    }
+  };
+
+  const confirmSwitchToSummaryMode = () => {
+    setShowSummarySwitchWarning(false);
+    setActiveScanMode('summary');
+    if (pendingSummaryDefaultFlag && onChangeDefaultScanMode) {
+      onChangeDefaultScanMode('summary');
+    }
+    setPendingSummaryDefaultFlag(false);
+  };
+
+  const computeAndSuggestNextClass = (
+    confirmedClassIds: string[],
+    dateStr: string
+  ): NextClassSuggestion | null => {
+    if (activeClasses.length <= 1 || confirmedClassIds.length === 0) return null;
+    const lastConfirmedClassId = confirmedClassIds[confirmedClassIds.length - 1];
+    const scannedToday = new Set<string>(confirmedClassIds);
+    existingSessions.forEach((s) => {
+      if (s.date === dateStr && s.reviewStatus === 'Confirmed') {
+        if (s.classId) scannedToday.add(s.classId);
+        const byName = activeClasses.find(
+          (c) => c.name.toLowerCase() === s.classGrade.toLowerCase()
+        );
+        if (byName) scannedToday.add(byName.id);
+      }
+    });
+
+    let updatedHistory = workflowHistory;
+    for (const cid of confirmedClassIds) {
+      updatedHistory = appendClassToWorkflowHistory(updatedHistory, dateStr, cid);
+    }
+
+    return suggestNextClassToScan({
+      currentClassId: lastConfirmedClassId,
+      classes: activeClasses,
+      scannedTodayClassIds: scannedToday,
+      history: updatedHistory
+    });
+  };
 
   // Clean up camera stream & pending analysis abort controller when component unmounts
   useEffect(() => {
@@ -875,6 +1027,21 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
       setGeminiResult(extractionResult);
       setValidatedDraft(draft);
       setActualModelUsed(usedModelName);
+
+      if (extractionResult.detectedHolidayAnnotation) {
+        setHolidayLabelInput(
+          extractionResult.detectedHolidayAnnotation.text || 'Public Holiday'
+        );
+        setPendingHolidayPrompt({
+          annotation: extractionResult.detectedHolidayAnnotation,
+          extraction: extractionResult,
+          draft,
+          usedModelName
+        });
+        setWorkflowState('ready-to-analyze');
+        return;
+      }
+
       setWorkflowState('review');
     } catch (err: any) {
       clearTimeout(timer2);
@@ -977,23 +1144,124 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
     session: AttendanceSession,
     confirmedDraft?: AttendanceSessionDraft
   ) => {
+    const enrichedSession: AttendanceSession = {
+      ...session,
+      captureMode: session.captureMode || 'register'
+    };
     if (onSaveConfirmedSession) {
-      await onSaveConfirmedSession(session, confirmedDraft);
+      await onSaveConfirmedSession(enrichedSession, confirmedDraft);
     }
     if (confirmedDraft?.id) {
       deleteStoredSessionDraft(confirmedDraft.id);
     }
+    const targetClassObj = activeClasses.find(
+      (c) =>
+        (enrichedSession.classId && c.id === enrichedSession.classId) ||
+        c.name.toLowerCase() === enrichedSession.classGrade.toLowerCase()
+    );
+    const suggestion = targetClassObj
+      ? computeAndSuggestNextClass([targetClassObj.id], enrichedSession.date)
+      : null;
+    setNextSuggestedClass(suggestion);
+
     setRawSourceImage(null);
     setRawDimensions(null);
     setUploadedImage(null);
     setGeminiResult(null);
     setValidatedDraft(null);
-    setConfirmedSessionSummary(session);
+    setConfirmedSessionSummary(enrichedSession);
     setWorkflowState('confirmed');
   };
 
-  // Reset to scan next class
-  const handleResetToScanAnother = () => {
+  // Handle Summary Note batch confirmation + adaptive next-class auto-advance
+  const handleSaveSummarySessions = async (
+    sessionsToSave: AttendanceSession[],
+    confirmedClassIds: string[]
+  ) => {
+    if (!onSaveConfirmedSession) return;
+    for (const sess of sessionsToSave) {
+      await onSaveConfirmedSession(sess);
+    }
+
+    const suggestion = computeAndSuggestNextClass(confirmedClassIds, selectedDate);
+    setNextSuggestedClass(suggestion);
+
+    if (suggestion?.nextClass) {
+      setSelectedClass(suggestion.nextClass.name);
+      const routeNote =
+        suggestion.source === 'learned'
+          ? 'following your learned class route'
+          : 'next class in sequence';
+      setAutoAdvanceToast(
+        `Saved ${sessionsToSave.length} class ${sessionsToSave.length === 1 ? 'summary' : 'summaries'}. Auto-advanced to ${suggestion.nextClass.name} (${routeNote}).`
+      );
+    } else if (suggestion?.source === 'complete') {
+      setAutoAdvanceToast(
+        `Saved ${sessionsToSave.length} class ${sessionsToSave.length === 1 ? 'summary' : 'summaries'}. All classes are now scanned for ${selectedDate}!`
+      );
+    } else {
+      setAutoAdvanceToast(
+        `Saved ${sessionsToSave.length} class ${sessionsToSave.length === 1 ? 'summary' : 'summaries'} for ${selectedDate}.`
+      );
+    }
+  };
+
+  // Confirm detected vertical/upside-down holiday annotation as a Non-School Day
+  const handleConfirmDetectedHolidayDay = async () => {
+    if (!pendingHolidayPrompt) return;
+    const reason = holidayLabelInput.trim() || 'Non-School Day';
+    setIsSavingHolidayDay(true);
+    try {
+      if (onAddNonSchoolGap) {
+        onAddNonSchoolGap({
+          startDate: selectedDate,
+          endDate: selectedDate,
+          label: reason,
+          source: 'register-ocr'
+        });
+      }
+
+      const targetClassObj = activeClasses.find((c) => c.name === selectedClass);
+      if (onSaveConfirmedSession && targetClassObj) {
+        const nonSchoolSession: AttendanceSession = {
+          id: `ses-nonschool-${targetClassObj.id.slice(0, 8)}-${selectedDate}-${Date.now()}`,
+          date: selectedDate,
+          classId: targetClassObj.id,
+          classGrade: targetClassObj.name,
+          term: school?.currentTerm || 'First Term',
+          sessionYear: school?.academicSession || '2025/2026 Academic Session',
+          totalEnrolled: classStudents.length,
+          presentCount: 0,
+          absentCount: 0,
+          blankCount: 0,
+          uncertainCount: 0,
+          unmappedCount: 0,
+          reviewStatus: 'Confirmed',
+          captureMode: 'register',
+          isNonSchoolDay: true,
+          nonSchoolReason: reason,
+          recordedBy: school?.administratorName || 'School Administrator',
+          verifiedBy: `${school?.administratorName || 'School Administrator'} (Confirmed Non-School Day)`,
+          notes: `Marked as Non-School Day (${reason}) from register sheet annotation.`,
+          sourceDraftId: `nonschool-${targetClassObj.id.slice(0, 8)}-${selectedDate}-${Date.now()}`
+        };
+        await onSaveConfirmedSession(nonSchoolSession);
+      }
+
+      setPendingHolidayPrompt(null);
+      handleRemoveImage();
+      setAutoAdvanceToast(
+        `${formatReadableDate(selectedDate)} recorded as Non-School Day ("${reason}") and excluded from attendance percentages.`
+      );
+    } catch (err: any) {
+      setErrorMessage(err?.message || 'Unable to save Non-School Day record.');
+    } finally {
+      setIsSavingHolidayDay(false);
+    }
+  };
+
+  // Reset to scan next class (optionally auto-selecting the suggested next class)
+  const handleResetToScanAnother = (nextClassNameOverride?: string) => {
     setRawSourceImage(null);
     setRawDimensions(null);
     setUploadedImage(null);
@@ -1007,7 +1275,13 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
     setGeminiResult(null);
     setValidatedDraft(null);
     setConfirmedSessionSummary(null);
-    setSelectedClass('');
+    setSelectedClass(nextClassNameOverride ?? nextSuggestedClass?.nextClass?.name ?? '');
+    if (nextClassNameOverride || nextSuggestedClass?.nextClass) {
+      const targetName = nextClassNameOverride || nextSuggestedClass?.nextClass?.name || '';
+      const routeText =
+        nextSuggestedClass?.source === 'learned' ? 'learned route' : 'sequential order';
+      setAutoAdvanceToast(`Ready for ${targetName} (${routeText}).`);
+    }
     setWorkflowState('empty');
   };
 
@@ -1103,7 +1377,7 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
     );
   }
 
-  // 2. IF IN CONFIRMED STATE: Render Confirmed Success Celebration Screen
+  // 2. IF IN CONFIRMED STATE: Render Confirmed Success Celebration Screen + Post-Scan Starred Pupils & Auto-Advance
   if (workflowState === 'confirmed' && confirmedSessionSummary) {
     const presentRate =
       confirmedSessionSummary.totalEnrolled > 0
@@ -1112,9 +1386,32 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
           )
         : 0;
 
+    const confirmedClassObj = activeClasses.find(
+      (c) =>
+        (confirmedSessionSummary.classId && c.id === confirmedSessionSummary.classId) ||
+        c.name.toLowerCase() === confirmedSessionSummary.classGrade.toLowerCase()
+    );
+
+    const postScanStarredSummaries =
+      (confirmedSessionSummary.captureMode ?? 'register') === 'register' &&
+      starredStudentIds.length > 0
+        ? computeStarredStudentSummaries({
+            students,
+            classes: activeClasses,
+            sessions: [
+              confirmedSessionSummary,
+              ...existingSessions.filter((s) => s.id !== confirmedSessionSummary.id)
+            ],
+            starredIds: starredStudentIds,
+            targetDate: confirmedSessionSummary.date,
+            nonSchoolGaps,
+            filterClassId: confirmedClassObj?.id
+          })
+        : [];
+
     return (
-      <div className="max-w-2xl mx-auto py-8 space-y-6">
-        <div className="bg-white rounded-xl border border-slate-200 p-8 shadow-xs text-center space-y-5">
+      <div className="max-w-2xl mx-auto py-6 sm:py-8 space-y-5">
+        <div className="bg-white rounded-xl border border-slate-200 p-6 sm:p-8 shadow-xs text-center space-y-5">
           <div className="w-16 h-16 rounded-full bg-emerald-100 text-emerald-800 flex items-center justify-center mx-auto shadow-xs">
             <CheckCircle2 className="w-9 h-9 text-emerald-700" />
           </div>
@@ -1135,7 +1432,7 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
                 </>
               ) : (
                 <>
-                  The attendance review for <strong className="text-slate-900">{confirmedSessionSummary.classGrade}</strong> has been confirmed and stored in your <strong className="text-slate-800">local browser demonstration storage</strong> (configure Supabase to persist remotely).
+                  The attendance review for <strong className="text-slate-900">{confirmedSessionSummary.classGrade}</strong> has been confirmed and stored in your <strong className="text-slate-800">local browser demonstration storage</strong>.
                 </>
               )}
             </p>
@@ -1161,36 +1458,66 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
               </div>
               <div className="p-2.5 bg-white rounded border border-slate-200">
                 <div className="text-slate-400 text-[10px] uppercase font-bold">Date</div>
-                <div className="text-sm font-bold text-slate-800 mt-0.5">
+                <div className="text-sm font-bold text-slate-800 mt-0.5 tabular-nums">
                   {confirmedSessionSummary.date}
                 </div>
               </div>
               <div className="p-2.5 bg-white rounded border border-slate-200">
                 <div className="text-slate-400 text-[10px] uppercase font-bold">Present</div>
-                <div className="text-sm font-bold text-emerald-700 mt-0.5">
+                <div className="text-sm font-bold text-emerald-700 mt-0.5 tabular-nums">
                   {confirmedSessionSummary.presentCount}
                 </div>
               </div>
               <div className="p-2.5 bg-white rounded border border-slate-200">
                 <div className="text-slate-400 text-[10px] uppercase font-bold">Absent</div>
-                <div className="text-sm font-bold text-rose-700 mt-0.5">
+                <div className="text-sm font-bold text-rose-700 mt-0.5 tabular-nums">
                   {confirmedSessionSummary.absentCount}
                 </div>
               </div>
             </div>
 
             <div className="text-[11px] text-slate-500 pt-1 flex items-center justify-between">
-              <span>Attendance Rate: <strong className="text-slate-800">{presentRate}%</strong></span>
-              <span>Total Enrolled: <strong className="text-slate-800">{confirmedSessionSummary.totalEnrolled} Pupils</strong></span>
+              <span>Attendance Rate: <strong className="text-slate-800 tabular-nums">{presentRate}%</strong></span>
+              <span>Total Enrolled: <strong className="text-slate-800 tabular-nums">{confirmedSessionSummary.totalEnrolled} Pupils</strong></span>
             </div>
           </div>
 
+          {/* Adaptive Next-Class Auto-Advance Notice */}
+          {nextSuggestedClass?.nextClass && (
+            <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3.5 text-left flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="text-xs text-emerald-950">
+                <div className="font-bold">
+                  Next Class Ready: {nextSuggestedClass.nextClass.name}
+                </div>
+                <div className="text-emerald-800 mt-0.5">
+                  {nextSuggestedClass.source === 'learned'
+                    ? `Suggested automatically from your learned daily route (${nextSuggestedClass.learnedDaysCount} school days observed).`
+                    : 'Auto-advancing sequentially to the next unscanned class.'}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => handleResetToScanAnother(nextSuggestedClass.nextClass?.name)}
+                className="min-h-[42px] px-4 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold inline-flex items-center justify-center gap-1.5 cursor-pointer shrink-0"
+              >
+                <span>Scan {nextSuggestedClass.nextClass.name}</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+
+          {nextSuggestedClass?.source === 'complete' && (
+            <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 text-xs font-semibold text-emerald-900">
+              All {activeClasses.length} classes have been scanned for {confirmedSessionSummary.date}.
+            </div>
+          )}
+
           {/* Action buttons */}
-          <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-2">
+          <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-1">
             <button
               type="button"
               onClick={onNavigateToRecords}
-              className="w-full sm:w-auto px-5 py-2.5 text-xs font-semibold text-white bg-emerald-700 hover:bg-emerald-800 rounded-lg transition-colors shadow-xs"
+              className="w-full sm:w-auto min-h-[42px] px-5 py-2.5 text-xs font-semibold text-white bg-emerald-700 hover:bg-emerald-800 rounded-lg transition-colors shadow-xs cursor-pointer"
             >
               View in Attendance Records
             </button>
@@ -1199,7 +1526,7 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
               <button
                 type="button"
                 onClick={onNavigateToDashboard}
-                className="w-full sm:w-auto px-5 py-2.5 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-300 rounded-lg transition-colors shadow-2xs"
+                className="w-full sm:w-auto min-h-[42px] px-5 py-2.5 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-300 rounded-lg transition-colors shadow-2xs cursor-pointer"
               >
                 Return to Dashboard
               </button>
@@ -1207,13 +1534,24 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
 
             <button
               type="button"
-              onClick={handleResetToScanAnother}
-              className="w-full sm:w-auto px-5 py-2.5 text-xs font-semibold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 rounded-lg transition-colors"
+              onClick={() => handleResetToScanAnother()}
+              className="w-full sm:w-auto min-h-[42px] px-5 py-2.5 text-xs font-semibold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 rounded-lg transition-colors cursor-pointer"
             >
-              Scan Another Register
+              {nextSuggestedClass?.nextClass
+                ? `Next: ${nextSuggestedClass.nextClass.name}`
+                : 'Scan Another Register'}
             </button>
           </div>
         </div>
+
+        {/* Post-Scan Starred Pupils Callout (Direct Register Only, Numbers & Percentages Only) */}
+        {postScanStarredSummaries.length > 0 && (
+          <StarredPupilsCard
+            summaries={postScanStarredSummaries}
+            title={`Starred Pupils in ${confirmedSessionSummary.classGrade}`}
+            subtitle={`Updated from today's direct register scan (${confirmedSessionSummary.date})`}
+          />
+        )}
       </div>
     );
   }
@@ -1231,15 +1569,133 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
         </div>
       )}
 
-      {/* Page Title */}
-      <div className="min-w-0">
-        <h2 className="text-lg sm:text-2xl font-bold text-slate-900">
-          Scan Attendance Register
-        </h2>
-        <p className="text-xs sm:text-sm text-slate-600 mt-0.5">
-          Choose class &amp; date, then take a photo or upload from gallery.
-        </p>
+      {/* Page Title & Mode Switcher */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 min-w-0">
+        <div className="min-w-0">
+          <h2 className="text-lg sm:text-2xl font-bold text-slate-900">
+            {activeScanMode === 'summary' ? 'Scan Written Summary' : 'Scan Attendance Register'}
+          </h2>
+          <p className="text-xs sm:text-sm text-slate-600 mt-0.5">
+            {activeScanMode === null
+              ? 'Choose whether to scan directly from the class register or from your written notebook summary.'
+              : activeScanMode === 'summary'
+              ? 'Select class & date, then photograph or upload your handwritten class totals.'
+              : 'Captures today’s exact day column from the rightmost week on the register sheet.'}
+          </p>
+        </div>
+
+        {activeScanMode !== null && (
+          <div className="inline-flex items-center p-1 bg-slate-200/80 rounded-xl shrink-0 self-start sm:self-auto">
+            <button
+              type="button"
+              onClick={() => requestSwitchToScanMode('register')}
+              className={`min-h-[38px] px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer inline-flex items-center gap-1.5 ${
+                activeScanMode === 'register'
+                  ? 'bg-white text-slate-900 shadow-2xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <ScanLine className="w-3.5 h-3.5" />
+              <span>Scan from Register</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => requestSwitchToScanMode('summary')}
+              className={`min-h-[38px] px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer inline-flex items-center gap-1.5 ${
+                activeScanMode === 'summary'
+                  ? 'bg-white text-slate-900 shadow-2xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <NotebookPen className="w-3.5 h-3.5" />
+              <span>Scan from Summary</span>
+            </button>
+          </div>
+        )}
       </div>
+
+      {/* Auto-advance / Gap Saved Confirmation Toast */}
+      {autoAdvanceToast && (
+        <div className="p-3.5 bg-emerald-50 border border-emerald-200 text-emerald-900 rounded-xl text-xs font-semibold flex items-center justify-between gap-2.5">
+          <div className="flex items-center gap-2 min-w-0">
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+            <span>{autoAdvanceToast}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setAutoAdvanceToast(null)}
+            className="text-emerald-700 hover:text-emerald-950 font-semibold cursor-pointer shrink-0"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      {/* INITIAL SCAN MODE CHOOSER (Shown when default scan mode is 'ask' and no mode selected yet) */}
+      {activeScanMode === null && (
+        <div className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-6 shadow-xs space-y-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <button
+              type="button"
+              onClick={() => setChooserSelection('register')}
+              className={`text-left p-4 rounded-xl border-2 transition-all cursor-pointer space-y-2 ${
+                chooserSelection === 'register'
+                  ? 'border-emerald-600 bg-emerald-50/60'
+                  : 'border-slate-200 hover:border-slate-300 bg-white'
+              }`}
+            >
+              <div className="w-10 h-10 rounded-lg bg-emerald-100 text-emerald-800 flex items-center justify-center">
+                <ScanLine className="w-5 h-5" />
+              </div>
+              <div className="text-sm font-bold text-slate-900">Scan from Register</div>
+              <p className="text-xs text-slate-600 leading-relaxed">
+                Photograph the physical class register directly. Automatically reads today’s day column in the rightmost week and updates starred pupils &amp; punctuality records.
+              </p>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setChooserSelection('summary')}
+              className={`text-left p-4 rounded-xl border-2 transition-all cursor-pointer space-y-2 ${
+                chooserSelection === 'summary'
+                  ? 'border-emerald-600 bg-emerald-50/60'
+                  : 'border-slate-200 hover:border-slate-300 bg-white'
+              }`}
+            >
+              <div className="w-10 h-10 rounded-lg bg-amber-100 text-amber-800 flex items-center justify-center">
+                <NotebookPen className="w-5 h-5" />
+              </div>
+              <div className="text-sm font-bold text-slate-900">Scan from Summary</div>
+              <p className="text-xs text-slate-600 leading-relaxed">
+                Photograph your handwritten notebook summary of Present, Absent, and Total counts collected across classes.
+              </p>
+            </button>
+          </div>
+
+          <div className="pt-2 border-t border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <label className="inline-flex items-center gap-2.5 text-xs text-slate-700 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={setChoiceAsDefault}
+                onChange={(e) => setSetChoiceAsDefault(e.target.checked)}
+                className="w-4 h-4 rounded border-slate-300 text-emerald-700 focus:ring-emerald-600"
+              />
+              <span>Set current choice as default scan mode (changeable in Settings)</span>
+            </label>
+
+            <button
+              type="button"
+              onClick={() => requestSwitchToScanMode(chooserSelection, setChoiceAsDefault)}
+              className="min-h-[44px] px-5 py-2.5 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-xs sm:text-sm font-bold inline-flex items-center justify-center gap-2 cursor-pointer shrink-0"
+            >
+              <span>
+                Continue with {chooserSelection === 'register' ? 'Scan from Register' : 'Scan from Summary'}
+              </span>
+              <ArrowRight className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Billing Alert Banner */}
       {billingAlert && (
@@ -1298,43 +1754,18 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
         </div>
       )}
 
-      {/* Full-width Mobile Intake Workflow */}
+      {/* Full-width Mobile Intake Workflow (Visible once a scan mode is selected) */}
+      {activeScanMode !== null && (
       <div className="w-full min-w-0 space-y-4">
-        {/* 1. Register Details & Format */}
+        {/* 1. Class & Date Details */}
         <div className="w-full min-w-0 bg-white rounded-xl border border-slate-200 p-3.5 sm:p-5 shadow-xs space-y-3.5">
           <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-100">
             <h3 className="text-xs sm:text-sm font-bold uppercase tracking-wider text-slate-800">
-              1. Register Details
+              1. Class &amp; Date
             </h3>
             <span className="text-[11px] font-medium text-slate-500">
-              {registerMode === 'daily' ? 'Single Daily Scan' : 'Multi-Week Sheet'}
+              {activeScanMode === 'summary' ? 'Written Summary Mode' : 'Single-Day · Rightmost Week'}
             </span>
-          </div>
-
-          {/* Workflow Mode Selector */}
-          <div className="grid grid-cols-2 gap-1.5 p-1 bg-slate-100 rounded-lg">
-            <button
-              type="button"
-              onClick={() => setRegisterMode('daily')}
-              className={`py-2 px-2.5 rounded-md text-xs font-semibold transition-all cursor-pointer ${
-                registerMode === 'daily'
-                  ? 'bg-white text-slate-900 shadow-2xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              Daily Register
-            </button>
-            <button
-              type="button"
-              onClick={() => setRegisterMode('multi-week')}
-              className={`py-2 px-2.5 rounded-md text-xs font-semibold transition-all cursor-pointer ${
-                registerMode === 'multi-week'
-                  ? 'bg-white text-slate-900 shadow-2xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              Multi-Week Grid
-            </button>
           </div>
 
           {/* Class Selection & Date */}
@@ -1347,7 +1778,7 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
                 value={selectedClass}
                 onChange={(e) => handleClassChange(e.target.value)}
                 disabled={activeClasses.length === 0}
-                className="w-full text-xs sm:text-sm py-2.5 px-3 border border-slate-300 rounded-lg bg-white focus:outline-hidden focus:ring-1 focus:ring-emerald-700 font-medium disabled:bg-slate-100"
+                className="w-full min-h-[44px] text-xs sm:text-sm py-2.5 px-3 border border-slate-300 rounded-lg bg-white focus:outline-hidden focus:ring-1 focus:ring-emerald-700 font-medium disabled:bg-slate-100"
               >
                 <option value="">
                   {activeClasses.length === 0 ? '-- No classes enrolled yet --' : '-- Choose Class --'}
@@ -1360,48 +1791,49 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
               </select>
             </div>
 
-            {registerMode === 'daily' ? (
-              <div className="min-w-0">
-                <label className="block text-xs font-semibold text-slate-800 mb-1">
-                  Attendance Date <span className="text-rose-500">*</span>
-                </label>
-                <input
-                  type="date"
-                  value={selectedDate}
-                  onChange={(e) => setSelectedDate(e.target.value)}
-                  className="w-full text-xs sm:text-sm py-2.5 px-3 border border-slate-300 rounded-lg bg-white focus:outline-hidden focus:ring-1 focus:ring-emerald-700"
-                />
-              </div>
-            ) : (
-              <div className="min-w-0">
-                <label className="block text-xs font-semibold text-slate-800 mb-1">
-                  Week Range On Sheet
-                </label>
-                <div className="grid grid-cols-2 gap-2">
-                  <select
-                    value={startingWeek}
-                    onChange={(e) => setStartingWeek(Number(e.target.value))}
-                    className="text-xs sm:text-sm py-2.5 px-2.5 border border-slate-300 rounded-lg bg-white"
-                  >
-                    {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map((w) => (
-                      <option key={w} value={w}>
-                        Week {w}
-                      </option>
-                    ))}
-                  </select>
-                  <select
-                    value={weeksCount}
-                    onChange={(e) => setWeeksCount(Number(e.target.value))}
-                    className="text-xs sm:text-sm py-2.5 px-2.5 border border-slate-300 rounded-lg bg-white"
-                  >
-                    <option value={2}>2 Weeks</option>
-                    <option value={3}>3 Weeks</option>
-                    <option value={4}>4 Weeks</option>
-                  </select>
-                </div>
-              </div>
-            )}
+            <div className="min-w-0">
+              <label className="block text-xs font-semibold text-slate-800 mb-1">
+                Attendance Date <span className="text-rose-500">*</span>
+              </label>
+              <input
+                type="date"
+                value={selectedDate}
+                onChange={(e) => setSelectedDate(e.target.value)}
+                className="w-full min-h-[44px] text-xs sm:text-sm py-2.5 px-3 border border-slate-300 rounded-lg bg-white focus:outline-hidden focus:ring-1 focus:ring-emerald-700 tabular-nums"
+              />
+            </div>
           </div>
+
+          {/* Weekend Warning (Sat & Sun are No School by default) */}
+          {dateIsWeekend ? (
+            <div className="p-3 rounded-lg bg-amber-50 border border-amber-300 text-amber-950 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+              <div className="flex items-start gap-2">
+                <CalendarOff className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+                <span>
+                  <strong>No School on Weekends:</strong> Saturdays and Sundays are non-school days by default. Choose a Monday–Friday school date to scan.
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedDate(getDefaultSchoolDate())}
+                className="min-h-[38px] px-3 py-1.5 rounded-lg bg-amber-800 hover:bg-amber-900 text-white text-xs font-semibold cursor-pointer shrink-0"
+              >
+                Use Latest School Day
+              </button>
+            </div>
+          ) : activeScanMode === 'register' ? (
+            <div className="px-3 py-2 rounded-lg bg-emerald-50/70 border border-emerald-200 text-xs text-emerald-950 flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <span className="font-bold">Target:</span>{' '}
+                <span>{targetWeekdayInfo.dayName}</span> ·{' '}
+                <span className="font-semibold">{targetWeekdayInfo.ordinalHint}</span> ·{' '}
+                <span>Rightmost Week</span>
+              </div>
+              <span className="text-[11px] text-emerald-800">
+                Use Crop to frame the exact region if needed
+              </span>
+            </div>
+          ) : null}
 
           {activeClasses.length === 0 && (
             <div className="p-3 rounded-lg bg-amber-50 border border-amber-300 text-amber-950 text-xs flex items-start gap-2">
@@ -1412,7 +1844,7 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
             </div>
           )}
 
-          {selectedClassItem && classStudents.length === 0 && (
+          {activeScanMode === 'register' && selectedClassItem && classStudents.length === 0 && (
             <div className="p-3 rounded-lg bg-amber-50 border border-amber-300 text-amber-950 text-xs flex items-start gap-2">
               <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
               <span>
@@ -1421,6 +1853,27 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
             </div>
           )}
         </div>
+
+        {/* SUMMARY MODE PANEL */}
+        {activeScanMode === 'summary' && !dateIsWeekend && (
+          <SummaryNoteScanPanel
+            school={school}
+            classes={activeClasses}
+            students={students}
+            selectedClassId={selectedClassItem?.id || ''}
+            selectedClassName={selectedClass}
+            selectedDate={selectedDate}
+            onSelectClassId={(cid) => {
+              const found = activeClasses.find((c) => c.id === cid);
+              if (found) setSelectedClass(found.name);
+            }}
+            onSaveSummarySessions={handleSaveSummarySessions}
+          />
+        )}
+
+        {/* DIRECT REGISTER CAPTURE CARD (Only when in Register mode) */}
+        {activeScanMode === 'register' && !dateIsWeekend && (
+        <>
 
         {/* 2. Photograph Capture & 9:16 Portrait Preview */}
         <div
@@ -1791,7 +2244,162 @@ export const ScanRegisterPage: React.FC<ScanRegisterPageProps> = ({
               </div>
             </div>
           )}
+        </>
+        )}
         </div>
+      )}
+
+      {/* REGISTER -> SUMMARY SWITCH WARNING MODAL */}
+      {showSummarySwitchWarning && (
+        <div
+          className="fixed inset-0 z-[75] bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="bg-white border border-slate-200 rounded-2xl max-w-md w-full shadow-2xl overflow-hidden">
+            <div className="px-5 py-4 border-b border-slate-200 flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-lg bg-amber-100 text-amber-800 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-slate-900">
+                  Switch to Written Summary Mode?
+                </h3>
+                <p className="text-xs text-slate-500">Pupil-level tracking notice</p>
+              </div>
+            </div>
+            <div className="p-5 space-y-4 text-xs sm:text-sm text-slate-700 leading-relaxed">
+              <p>
+                Written Summary mode records class-level <strong>Present</strong>, <strong>Absent</strong>, and <strong>Total</strong> counts only.
+              </p>
+              <p>
+                You will not capture individual pupil-level metrics (<strong>starred pupil alerts</strong> or <strong>punctuality ratings</strong>) for dates scanned in summary mode. Pupil-level metrics will continue to show for dates scanned directly from the register.
+              </p>
+              <div className="flex flex-col-reverse sm:flex-row justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowSummarySwitchWarning(false);
+                    setPendingSummaryDefaultFlag(false);
+                  }}
+                  className="min-h-[44px] px-4 py-2 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold cursor-pointer"
+                >
+                  Stay on Register Scan
+                </button>
+                <button
+                  type="button"
+                  onClick={confirmSwitchToSummaryMode}
+                  className="min-h-[44px] px-4 py-2 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold cursor-pointer"
+                >
+                  Continue to Summary Mode
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SEQUENTIAL WEEKDAY GAP LABEL MODAL (Free-text typed input, no presets) */}
+      <GapLabelPromptModal
+        gap={detectedWeekdayGap}
+        onSaveLabel={(typedLabel) => {
+          if (detectedWeekdayGap && onAddNonSchoolGap) {
+            onAddNonSchoolGap({
+              startDate: detectedWeekdayGap.startDate,
+              endDate: detectedWeekdayGap.endDate,
+              label: typedLabel,
+              source: 'gap-prompt'
+            });
+            setAutoAdvanceToast(
+              `Recorded "${typedLabel}" for ${detectedWeekdayGap.missingWeekdays.length} skipped school ${
+                detectedWeekdayGap.missingWeekdays.length === 1 ? 'day' : 'days'
+              }.`
+            );
+          }
+        }}
+        onSkip={() => {
+          if (detectedWeekdayGap) {
+            const key = `${detectedWeekdayGap.startDate}__${detectedWeekdayGap.endDate}`;
+            setDismissedGapKeys((prev) => {
+              const next = prev.includes(key) ? prev : [...prev, key];
+              saveStoredDismissedGapKeys(next);
+              return next;
+            });
+          }
+        }}
+      />
+
+      {/* VERTICAL / UPSIDE-DOWN SHEET HOLIDAY ANNOTATION CONFIRMATION MODAL */}
+      {pendingHolidayPrompt && (
+        <div
+          className="fixed inset-0 z-[75] bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="bg-white border border-slate-200 rounded-2xl max-w-md w-full shadow-2xl overflow-hidden">
+            <div className="px-5 py-4 border-b border-slate-200 flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-lg bg-amber-100 text-amber-800 flex items-center justify-center shrink-0">
+                <CalendarOff className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-slate-900">
+                  Possible Non-School Day Detected on Sheet
+                </h3>
+                <p className="text-xs text-slate-500">
+                  Detected {pendingHolidayPrompt.annotation.orientation} text: &ldquo;{pendingHolidayPrompt.annotation.text}&rdquo;
+                </p>
+              </div>
+            </div>
+
+            <div className="p-5 space-y-4">
+              <p className="text-xs sm:text-sm text-slate-700 leading-relaxed">
+                This register sheet appears to contain a holiday, strike, or school closure note for{' '}
+                <strong>{formatReadableDate(selectedDate)}</strong>. Confirm below if you want to record it as a Non-School Day and exclude it from attendance percentages.
+              </p>
+
+              <div className="space-y-1.5">
+                <label className="block text-xs font-semibold text-slate-700">
+                  Non-School Day Label
+                </label>
+                <input
+                  type="text"
+                  value={holidayLabelInput}
+                  onChange={(e) => setHolidayLabelInput(e.target.value)}
+                  placeholder="Type label (e.g. Strike, Public Holiday, Mid-Term Break)"
+                  className="w-full min-h-[44px] px-3.5 py-2.5 rounded-xl border border-slate-300 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+
+              <div className="flex flex-col-reverse sm:flex-row justify-end gap-2 pt-1">
+                <button
+                  type="button"
+                  disabled={isSavingHolidayDay}
+                  onClick={() => {
+                    setPendingHolidayPrompt(null);
+                    setWorkflowState('review');
+                  }}
+                  className="min-h-[44px] px-4 py-2 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold cursor-pointer"
+                >
+                  Normal School Day — Review Sheet
+                </button>
+                <button
+                  type="button"
+                  disabled={isSavingHolidayDay}
+                  onClick={() => void handleConfirmDetectedHolidayDay()}
+                  className="min-h-[44px] px-4 py-2 rounded-xl bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60 text-white text-xs font-bold cursor-pointer inline-flex items-center justify-center gap-1.5"
+                >
+                  {isSavingHolidayDay ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <CheckCircle2 className="w-4 h-4" />
+                  )}
+                  <span>Confirm Non-School Day</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* LIVE IN-APP CAMERA VIEWFINDER MODAL */}
       {isLiveCameraOpen && (

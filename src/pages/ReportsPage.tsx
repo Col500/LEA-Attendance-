@@ -12,7 +12,16 @@ import {
   WifiOff
 } from 'lucide-react';
 import { schoolInfo } from '../data/mockData';
-import { AttendanceSession, ClassItem, SchoolInfo, Student } from '../types/attendance';
+import {
+  AttendanceSession,
+  ClassItem,
+  NonSchoolGapRecord,
+  SchoolInfo,
+  Student
+} from '../types/attendance';
+import { StarredPupilsCard } from '../components/StarredPupilsCard';
+import { computeStarredStudentSummaries } from '../services/studentTrackingMetrics';
+import { getDefaultSchoolDate } from '../services/schoolCalendarGaps';
 import {
   ATTENDANCE_FORMULA_EXPLANATION,
   AttendanceReportResult,
@@ -36,6 +45,8 @@ interface ReportsPageProps {
   classes?: ClassItem[];
   students?: Student[];
   school?: SchoolInfo;
+  starredStudentIds?: string[];
+  nonSchoolGaps?: NonSchoolGapRecord[];
   canWrite?: boolean;
   isSupabaseLive?: boolean;
 }
@@ -45,6 +56,8 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
   classes: propClasses,
   students: propStudents = [],
   school,
+  starredStudentIds = [],
+  nonSchoolGaps = [],
   canWrite = false,
   isSupabaseLive = false
 }) => {
@@ -116,6 +129,20 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
   }, [propSessions, propStudents, classesList, selectedClassId, startDate, endDate]);
 
   const report = isSupabaseLive && remoteReport ? remoteReport : localReport;
+
+  const starredSummaries = useMemo(
+    () =>
+      computeStarredStudentSummaries({
+        students: propStudents,
+        classes: classesList,
+        sessions: propSessions || [],
+        starredIds: starredStudentIds,
+        targetDate: getDefaultSchoolDate(),
+        nonSchoolGaps,
+        filterClassId: selectedClassId === 'All' ? undefined : selectedClassId
+      }),
+    [propStudents, classesList, propSessions, starredStudentIds, nonSchoolGaps, selectedClassId]
+  );
 
   const selectedClassName = useMemo(() => {
     if (selectedClassId === 'All') return 'All Classes';
@@ -579,6 +606,16 @@ export const ReportsPage: React.FC<ReportsPageProps> = ({
               </span>
             </div>
           </div>
+
+          {/* Starred Pupils Summary (Direct Register Only — Numbers & Percentages Only) */}
+          {starredSummaries.length > 0 && (
+            <StarredPupilsCard
+              summaries={starredSummaries}
+              title="Starred Pupils Summary"
+              subtitle="Computed strictly from confirmed direct register sessions (non-school days & summary scans excluded)"
+              compact
+            />
+          )}
 
           {/* Empty State or Student-Level Table */}
           {report.confirmedSessionCount === 0 && report.studentRows.length === 0 ? (

@@ -73,6 +73,53 @@ export interface StaffProfile {
   email?: string;
 }
 
+export type AppThemeId = 'classic' | 'paper' | 'sky' | 'sage' | 'midnight';
+
+export type ScanCaptureMode = 'register' | 'summary';
+
+export type DefaultScanModePreference = 'ask' | 'register' | 'summary';
+
+export interface NonSchoolGapRecord {
+  id: string;
+  startDate: string; // YYYY-MM-DD
+  endDate: string; // YYYY-MM-DD
+  dates: string[]; // Mon-Fri YYYY-MM-DD dates covered
+  label: string; // Free-text admin label (e.g. Strike, Mid-Term Break, Public Holiday)
+  source: 'gap-prompt' | 'register-ocr' | 'manual';
+  createdAt: string;
+}
+
+export interface ClassWorkflowHistoryEntry {
+  date: string; // YYYY-MM-DD
+  classIds: string[]; // Ordered sequence of classes confirmed on that date
+}
+
+export interface HeadmistressAlertState {
+  date: string; // YYYY-MM-DD
+  firstNotifiedAt: string | null;
+  attendedAt: string | null;
+  onePmNotifiedAt: string | null;
+}
+
+export interface SummaryNoteExtractedClass {
+  classNameDetected: string;
+  matchedClassId: string | null;
+  presentCount: number;
+  absentCount: number;
+  totalCount: number;
+  hasMathMismatch: boolean;
+  notes?: string | null;
+}
+
+export interface SummaryNoteExtractionResult {
+  dateDetected?: string | null;
+  items: SummaryNoteExtractedClass[];
+  rawText: string;
+  modelUsed: string;
+  aiStatus: 'applied' | 'vision-only';
+  aiNote?: string;
+}
+
 export interface AttendanceSession {
   id: string;
   date: string;
@@ -87,6 +134,9 @@ export interface AttendanceSession {
   uncertainCount?: number;
   unmappedCount?: number;
   reviewStatus: ReviewStatus;
+  captureMode?: ScanCaptureMode;
+  isNonSchoolDay?: boolean;
+  nonSchoolReason?: string;
   recordedBy: string;
   verifiedBy?: string;
   registerImageUri?: string;
@@ -198,6 +248,13 @@ export interface LeaGridGeometry {
   weeks: LeaGridWeekGeometry[];
 }
 
+export interface DetectedHolidayAnnotation {
+  text: string;
+  orientation: 'vertical' | 'upside-down' | 'horizontal';
+  day: string;
+  week: string;
+}
+
 export interface GeminiExtractionResult {
   schoolIdentified?: string | null;
   classIdentified?: string | null;
@@ -206,6 +263,9 @@ export interface GeminiExtractionResult {
   layoutQuality?: RegisterLayoutQuality;
   processingStageUsed?: 'whole-page' | 'staged-cell-verification';
   gridGeometry?: LeaGridGeometry | null;
+  targetWeekUsed?: string | null;
+  targetDayUsed?: DayOfWeek | null;
+  detectedHolidayAnnotation?: DetectedHolidayAnnotation | null;
   totalRowsDetected: number;
   detectedDays?: string[];
   rows: GeminiExtractionRow[];

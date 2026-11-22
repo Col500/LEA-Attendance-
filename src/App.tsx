@@ -11,6 +11,7 @@ import { MobileBottomNav } from './components/MobileBottomNav';
 import { SampleDataBanner } from './components/SampleDataBanner';
 import { StaffSignInModal } from './components/StaffSignInModal';
 import { OnboardingGuide } from './components/OnboardingGuide';
+import { HeadmistressAlertBanner } from './components/HeadmistressAlertBanner';
 import { canAccessNavTab, canWriteSchoolRecords } from './lib/authRoles';
 import {
   DEFAULT_TUTORIAL_STATE,
@@ -29,8 +30,13 @@ import { AttendanceRecordsPage } from './pages/AttendanceRecordsPage';
 import { ReportsPage } from './pages/ReportsPage';
 import { SettingsPage } from './pages/SettingsPage';
 import {
+  AppThemeId,
   AttendanceSession,
   AttendanceSessionDraft,
+  ClassWorkflowHistoryEntry,
+  DefaultScanModePreference,
+  HeadmistressAlertState,
+  NonSchoolGapRecord,
   SchoolInfo,
   ClassItem,
   StaffProfile,
@@ -46,16 +52,49 @@ import {
   addStoredAttendanceSession,
   saveStoredAttendanceSessions,
   deleteStoredAttendanceSession,
-  clearAllStoredAttendanceRecords
+  clearAllStoredAttendanceRecords,
+  clearAllStoredPupilRecords
 } from './services/rosterStorage';
+import {
+  createNonSchoolGapRecord,
+  formatReadableDate,
+  getDefaultSchoolDate,
+  getStoredNonSchoolGaps,
+  saveStoredNonSchoolGaps
+} from './services/schoolCalendarGaps';
+import {
+  appendClassToWorkflowHistory,
+  applyThemeToDocument,
+  getDefaultScanModePreference,
+  getStoredStarredStudentIds,
+  getStoredTheme,
+  getStoredWorkflowHistory,
+  saveDefaultScanModePreference,
+  saveStoredStarredStudentIds,
+  saveStoredTheme,
+  saveStoredWorkflowHistory
+} from './services/workflowPreferences';
+import {
+  evaluateDailyClassCompletion,
+  evaluateHeadmistressRingAction,
+  getStoredHeadmistressAlertState,
+  getStoredHeadmistressPrefs,
+  HeadmistressAlertPreferences,
+  playHeadmistressChime,
+  saveStoredHeadmistressAlertState,
+  saveStoredHeadmistressPrefs,
+  triggerHeadmistressBrowserNotification
+} from './services/headmistressAlertService';
 import { getSupabaseClient, isSupabaseConfigured } from './lib/supabaseClient';
 import {
   confirmAttendanceSessionInSupabase,
   confirmExistingSessionInSupabase,
+  confirmSummaryOrNonSchoolSessionInSupabase,
   createClassInSupabase,
   createStudentInSupabase,
   createStudentsBulkInSupabase,
   deleteAllAttendanceSessionsInSupabase,
+  deleteAllStudentsInSupabase,
   deleteAttendanceSessionInSupabase,
   deleteClassInSupabase,
   fetchClassesFromSupabase,
@@ -103,6 +142,90 @@ export default function App() {
     : 'supabase-needs-auth';
 
   const canWrite = !supabaseConfigured || canWriteSchoolRecords(staffProfile?.role);
+
+  // Theme, Scanning Preferences, Starred Pupils, Non-School Gaps & Adaptive Workflow State
+  const [appTheme, setAppTheme] = useState<AppThemeId>(() => getStoredTheme());
+  const [defaultScanMode, setDefaultScanMode] = useState<DefaultScanModePreference>(() =>
+    getDefaultScanModePreference()
+  );
+  const [starredStudentIds, setStarredStudentIds] = useState<string[]>(() =>
+    getStoredStarredStudentIds()
+  );
+  const [nonSchoolGaps, setNonSchoolGaps] = useState<NonSchoolGapRecord[]>(() =>
+    getStoredNonSchoolGaps()
+  );
+  const [workflowHistory, setWorkflowHistory] = useState<ClassWorkflowHistoryEntry[]>(() =>
+    getStoredWorkflowHistory()
+  );
+  const [headmistressPrefs, setHeadmistressPrefs] = useState<HeadmistressAlertPreferences>(() =>
+    getStoredHeadmistressPrefs()
+  );
+  const [headmistressAlertState, setHeadmistressAlertState] =
+    useState<HeadmistressAlertState | null>(() => getStoredHeadmistressAlertState());
+
+  useEffect(() => {
+    applyThemeToDocument(appTheme);
+    saveStoredTheme(appTheme);
+  }, [appTheme]);
+
+  const handleChangeTheme = useCallback((nextTheme: AppThemeId) => {
+    setAppTheme(nextTheme);
+  }, []);
+
+  const handleChangeDefaultScanMode = useCallback((pref: DefaultScanModePreference) => {
+    setDefaultScanMode(pref);
+    saveDefaultScanModePreference(pref);
+  }, []);
+
+  const handleToggleStarStudent = useCallback((studentId: string) => {
+    setStarredStudentIds((prev) => {
+      const next = prev.includes(studentId)
+        ? prev.filter((id) => id !== studentId)
+        : [...prev, studentId];
+      saveStoredStarredStudentIds(next);
+      return next;
+    });
+  }, []);
+
+  const handleAddNonSchoolGap = useCallback(
+    (params: { startDate: string; endDate: string; label: string; source: NonSchoolGapRecord['source'] }) => {
+      const record = createNonSchoolGapRecord(params);
+      setNonSchoolGaps((prev) => {
+        const next = [record, ...prev];
+        saveStoredNonSchoolGaps(next);
+        return next;
+      });
+      return record;
+    },
+    []
+  );
+
+  const handleDeleteNonSchoolGap = useCallback((gapId: string) => {
+    setNonSchoolGaps((prev) => {
+      const next = prev.filter((g) => g.id !== gapId);
+      saveStoredNonSchoolGaps(next);
+      return next;
+    });
+  }, []);
+
+  const handleRecordWorkflowClassScan = useCallback((date: string, classId: string) => {
+    if (!date || !classId) return;
+    setWorkflowHistory((prev) => {
+      const next = appendClassToWorkflowHistory(prev, date, classId);
+      saveStoredWorkflowHistory(next);
+      return next;
+    });
+  }, []);
+
+  const handleResetWorkflowHistory = useCallback(() => {
+    setWorkflowHistory([]);
+    saveStoredWorkflowHistory([]);
+  }, []);
+
+  const handleUpdateHeadmistressPrefs = useCallback((next: HeadmistressAlertPreferences) => {
+    setHeadmistressPrefs(next);
+    saveStoredHeadmistressPrefs(next);
+  }, []);
 
   const syncFromSupabase = useCallback(async () => {
     const client = getSupabaseClient();
@@ -188,6 +311,135 @@ export default function App() {
     };
   }, [syncFromSupabase]);
 
+  // Live Supabase Realtime listener so Headmistress receives immediate completion alert when Admin finishes scanning
+  useEffect(() => {
+    if (persistenceMode !== 'supabase-live') return;
+    const client = getSupabaseClient();
+    if (!client) return;
+
+    const channel = client
+      .channel('lea-attendance-sessions-live')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'attendance_sessions' },
+        () => {
+          void syncFromSupabase();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      void client.removeChannel(channel);
+    };
+  }, [persistenceMode, syncFromSupabase]);
+
+  // Headmistress Two-Ring Completion Alert Watcher:
+  // Ring #1: immediately when all active classes are confirmed for today
+  // Ring #2: at 1:00 PM (13:00 local) ONLY if the Headmistress has not yet attended to Ring #1
+  const todaySchoolDate = getDefaultSchoolDate();
+  const dailyCompletion = useMemo(
+    () =>
+      evaluateDailyClassCompletion({
+        date: todaySchoolDate,
+        classes,
+        sessions,
+        nonSchoolGaps
+      }),
+    [todaySchoolDate, classes, sessions, nonSchoolGaps]
+  );
+
+  const isHeadmistressRecipient =
+    persistenceMode === 'local-demo' || staffProfile?.role === 'headteacher';
+
+  const evaluateAndFireHeadmistressRing = useCallback(() => {
+    if (!headmistressPrefs.enabled || !isHeadmistressRecipient) return;
+    if (!dailyCompletion.isAllComplete) return;
+
+    const now = new Date();
+    const action = evaluateHeadmistressRingAction({
+      date: todaySchoolDate,
+      now,
+      isAllComplete: dailyCompletion.isAllComplete,
+      alertState: headmistressAlertState
+    });
+
+    if (action === 'NONE') return;
+
+    const nowIso = now.toISOString();
+    const baseState: HeadmistressAlertState =
+      headmistressAlertState && headmistressAlertState.date === todaySchoolDate
+        ? headmistressAlertState
+        : {
+            date: todaySchoolDate,
+            firstNotifiedAt: null,
+            attendedAt: null,
+            onePmNotifiedAt: null
+          };
+
+    const nextState: HeadmistressAlertState =
+      action === 'RING_COMPLETION'
+        ? { ...baseState, firstNotifiedAt: nowIso }
+        : { ...baseState, onePmNotifiedAt: nowIso };
+
+    setHeadmistressAlertState(nextState);
+    saveStoredHeadmistressAlertState(nextState);
+
+    if (headmistressPrefs.soundEnabled) {
+      playHeadmistressChime(action === 'RING_1PM_REMINDER' ? 'reminder' : 'completion');
+    }
+
+    if (headmistressPrefs.browserNotificationsEnabled) {
+      const datePretty = formatReadableDate(todaySchoolDate);
+      const title =
+        action === 'RING_1PM_REMINDER'
+          ? '1:00 PM Attendance Reminder'
+          : 'All Classes Scanned Today';
+      const body = `All ${dailyCompletion.totalClasses} classes have confirmed attendance for ${datePretty}. Tap to review.`;
+      triggerHeadmistressBrowserNotification(title, body);
+    }
+  }, [
+    headmistressPrefs,
+    isHeadmistressRecipient,
+    dailyCompletion.isAllComplete,
+    dailyCompletion.totalClasses,
+    todaySchoolDate,
+    headmistressAlertState
+  ]);
+
+  useEffect(() => {
+    evaluateAndFireHeadmistressRing();
+    const interval = window.setInterval(() => {
+      evaluateAndFireHeadmistressRing();
+    }, 30000);
+    return () => window.clearInterval(interval);
+  }, [evaluateAndFireHeadmistressRing]);
+
+  const handleMarkHeadmistressAlertAttended = useCallback(() => {
+    const nowIso = new Date().toISOString();
+    setHeadmistressAlertState((prev) => {
+      const next: HeadmistressAlertState = {
+        date: todaySchoolDate,
+        firstNotifiedAt:
+          prev && prev.date === todaySchoolDate ? prev.firstNotifiedAt || nowIso : nowIso,
+        attendedAt: nowIso,
+        onePmNotifiedAt:
+          prev && prev.date === todaySchoolDate ? prev.onePmNotifiedAt : null
+      };
+      saveStoredHeadmistressAlertState(next);
+      return next;
+    });
+  }, [todaySchoolDate]);
+
+  const showHeadmistressBanner = Boolean(
+    headmistressPrefs.enabled &&
+      isHeadmistressRecipient &&
+      dailyCompletion.isAllComplete &&
+      headmistressAlertState &&
+      headmistressAlertState.date === todaySchoolDate &&
+      headmistressAlertState.firstNotifiedAt &&
+      !headmistressAlertState.attendedAt
+  );
+
   const handleSignOut = async () => {
     wasAuthenticatedRef.current = false;
     setSessionNotice('You have been signed out safely.');
@@ -235,10 +487,14 @@ export default function App() {
     }
 
     const client = getSupabaseClient();
-    if (persistenceMode === 'supabase-live' && client && draft) {
-      const targetClassObj = classes.find(
-        (c) => c.id === draft.classId || c.name.toLowerCase() === newSession.classGrade.toLowerCase()
-      );
+    const targetClassObj = classes.find(
+      (c) =>
+        (draft?.classId && c.id === draft.classId) ||
+        (newSession.classId && c.id === newSession.classId) ||
+        c.name.toLowerCase() === newSession.classGrade.toLowerCase()
+    );
+
+    if (persistenceMode === 'supabase-live' && client) {
       if (!targetClassObj) {
         throw new Error(
           `Class "${newSession.classGrade}" does not exist in Supabase yet. Migrate or create the class in Students & Classes first.`
@@ -246,15 +502,23 @@ export default function App() {
       }
 
       try {
-        const savedSession = await confirmAttendanceSessionInSupabase(client, {
-          draft,
-          sessionSummary: newSession,
-          classId: targetClassObj.id,
-          selectedDate: newSession.date,
-          modelUsed: draft.sourceImageMetadata.modelUsed || 'google-cloud-vision'
-        });
+        const savedSession = draft
+          ? await confirmAttendanceSessionInSupabase(client, {
+              draft,
+              sessionSummary: newSession,
+              classId: targetClassObj.id,
+              selectedDate: newSession.date,
+              modelUsed: draft.sourceImageMetadata.modelUsed || 'google-cloud-vision'
+            })
+          : await confirmSummaryOrNonSchoolSessionInSupabase(client, {
+              sessionSummary: newSession,
+              classId: targetClassObj.id
+            });
 
         setSessions((prev) => [savedSession, ...prev.filter((s) => s.id !== savedSession.id)]);
+        if (!newSession.isNonSchoolDay) {
+          handleRecordWorkflowClassScan(newSession.date, targetClassObj.id);
+        }
         return;
       } catch (err: any) {
         // Record failed save attempt visibly for Attendance History while preserving review draft
@@ -276,8 +540,15 @@ export default function App() {
     }
 
     // Local browser demonstration fallback
-    const updated = addStoredAttendanceSession(newSession);
+    const enrichedSession: AttendanceSession = {
+      ...newSession,
+      classId: newSession.classId || targetClassObj?.id
+    };
+    const updated = addStoredAttendanceSession(enrichedSession);
     setSessions(updated);
+    if (!newSession.isNonSchoolDay && enrichedSession.classId) {
+      handleRecordWorkflowClassScan(newSession.date, enrichedSession.classId);
+    }
   };
 
   const handleConfirmSessionFromRecords = async (sessionId: string) => {
@@ -349,6 +620,36 @@ export default function App() {
     clearAllStoredAttendanceRecords();
     setSessions([]);
     setSelectedSessionForDetail(null);
+  };
+
+  const handleDeleteAllPupils = async (options?: { alsoDeleteClasses?: boolean }) => {
+    if (supabaseConfigured && !canWrite) {
+      throw new Error('Read-only access: Only the School Admin login can delete pupil records.');
+    }
+
+    let sessionsCleared = true;
+    const client = getSupabaseClient();
+    if (persistenceMode === 'supabase-live' && client) {
+      const res = await deleteAllStudentsInSupabase(client, options);
+      sessionsCleared = res.sessionsCleared;
+    } else if (supabaseConfigured) {
+      throw new Error('Your authentication session is inactive. Sign in as School Admin to delete pupil records.');
+    }
+
+    clearAllStoredPupilRecords(options);
+    setStudents([]);
+    if (sessionsCleared) {
+      setSessions([]);
+      setSelectedSessionForDetail(null);
+    }
+    setStarredStudentIds([]);
+    saveStoredStarredStudentIds([]);
+    if (options?.alsoDeleteClasses) {
+      setClasses([]);
+      setWorkflowHistory([]);
+      saveStoredWorkflowHistory([]);
+    }
+    return { studentsDeleted: true, sessionsCleared, classesDeleted: Boolean(options?.alsoDeleteClasses) };
   };
 
   // Roster Management Handlers (Supabase when authenticated & live, localStorage fallback otherwise)
@@ -713,7 +1014,24 @@ export default function App() {
     !supabaseConfigured || canAccessNavTab(staffProfile?.role, activeTab);
 
   return (
-    <div className="min-h-screen w-full max-w-full overflow-x-hidden bg-slate-100/90 text-slate-800 flex flex-col font-sans antialiased selection:bg-emerald-200 selection:text-emerald-900">
+    <div className="min-h-screen w-full max-w-full overflow-x-hidden bg-[var(--app-bg)] text-[var(--app-text)] flex flex-col font-sans antialiased selection:bg-emerald-200 selection:text-emerald-900 transition-colors">
+      {/* Headmistress Two-Ring Completion Alert Banner */}
+      <HeadmistressAlertBanner
+        visible={showHeadmistressBanner}
+        isReminder={Boolean(headmistressAlertState?.onePmNotifiedAt)}
+        totalClasses={dailyCompletion.totalClasses}
+        dateLabel={formatReadableDate(todaySchoolDate)}
+        onInspectAttendance={() => {
+          handleMarkHeadmistressAlertAttended();
+          handleSelectTab('dashboard');
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        }}
+        onMarkAttended={handleMarkHeadmistressAlertAttended}
+        onReplayChime={() =>
+          playHeadmistressChime(headmistressAlertState?.onePmNotifiedAt ? 'reminder' : 'completion')
+        }
+      />
+
       {/* Persistence / Sample Mode Status Banner */}
       <SampleDataBanner
         persistenceMode={persistenceMode}
@@ -825,6 +1143,9 @@ export default function App() {
               isSupabaseLive={persistenceMode === 'supabase-live'}
               userRole={staffProfile?.role}
               canScan={!supabaseConfigured || canAccessNavTab(staffProfile?.role, 'scan')}
+              starredStudentIds={starredStudentIds}
+              nonSchoolGaps={nonSchoolGaps}
+              onToggleStarStudent={handleToggleStarStudent}
               onNavigateToScan={() => handleSelectTab('scan')}
               onNavigateToRecords={() => handleSelectTab('records')}
               onNavigateToReports={() => handleSelectTab('reports')}
@@ -849,6 +1170,12 @@ export default function App() {
               students={students}
               existingSessions={sessions}
               isSupabaseLive={persistenceMode === 'supabase-live'}
+              defaultScanMode={defaultScanMode}
+              onChangeDefaultScanMode={handleChangeDefaultScanMode}
+              nonSchoolGaps={nonSchoolGaps}
+              onAddNonSchoolGap={handleAddNonSchoolGap}
+              starredStudentIds={starredStudentIds}
+              workflowHistory={workflowHistory}
               onInspectExistingSession={(existingSession) => {
                 setSelectedSessionForDetail(existingSession);
                 handleSelectTab('records');
@@ -862,6 +1189,10 @@ export default function App() {
             <StudentsPage
               students={students}
               classes={classes}
+              sessions={sessions}
+              nonSchoolGaps={nonSchoolGaps}
+              starredStudentIds={starredStudentIds}
+              onToggleStarStudent={handleToggleStarStudent}
               canWrite={canWrite}
               onAddStudent={handleAddStudent}
               onBulkAddStudents={handleBulkAddStudents}
@@ -870,6 +1201,7 @@ export default function App() {
               onAddClass={handleAddClass}
               onEditClass={handleEditClass}
               onDeleteClass={handleDeleteClass}
+              onDeleteAllPupils={handleDeleteAllPupils}
               autoOpenBulkScanSignal={autoOpenBulkScanSignal}
               highlightedTarget={highlightedTarget}
             />
@@ -895,6 +1227,8 @@ export default function App() {
               classes={classes}
               students={students}
               school={currentSchool}
+              starredStudentIds={starredStudentIds}
+              nonSchoolGaps={nonSchoolGaps}
               canWrite={canWrite}
               isSupabaseLive={persistenceMode === 'supabase-live'}
             />
@@ -906,9 +1240,23 @@ export default function App() {
               onUpdateSchool={handleUpdateSchool}
               persistenceMode={persistenceMode}
               staffProfile={staffProfile}
+              classes={classes}
+              students={students}
+              sessions={sessions}
+              appTheme={appTheme}
+              onChangeTheme={handleChangeTheme}
+              defaultScanMode={defaultScanMode}
+              onChangeDefaultScanMode={handleChangeDefaultScanMode}
+              workflowHistory={workflowHistory}
+              onResetWorkflowHistory={handleResetWorkflowHistory}
+              nonSchoolGaps={nonSchoolGaps}
+              onDeleteNonSchoolGap={handleDeleteNonSchoolGap}
+              headmistressPrefs={headmistressPrefs}
+              onUpdateHeadmistressPrefs={handleUpdateHeadmistressPrefs}
               onAuthChanged={syncFromSupabase}
               onSignOut={handleSignOut}
               onSeedLocalRoster={handleSeedLocalRoster}
+              onDeleteAllPupils={handleDeleteAllPupils}
               highlightedTarget={highlightedTarget}
               focusProfileSignal={focusProfileSignal}
               onStartTutorial={handleRestartTutorial}

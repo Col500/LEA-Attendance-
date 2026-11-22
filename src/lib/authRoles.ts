@@ -18,7 +18,7 @@ export function resolveLoginIdentifier(identifier: string): string {
   const cleaned = identifier.trim().toLowerCase();
   if (!cleaned) return '';
   if (cleaned.includes('@')) {
-    return cleaned;
+    return cleaned.replace(/\s+/g, '');
   }
   const safeSlug = cleaned.replace(/[^a-z0-9._-]/g, '');
   if (!safeSlug) return '';

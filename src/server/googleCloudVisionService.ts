@@ -3,7 +3,12 @@ import { GoogleAuth } from 'google-auth-library';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { GeminiExtractionResult, MarkStatus } from '../types/attendance';
+import {
+  DayOfWeek,
+  DetectedHolidayAnnotation,
+  GeminiExtractionResult,
+  MarkStatus
+} from '../types/attendance';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -150,6 +155,8 @@ interface PositionedWord {
   yMin: number;
   yMax: number;
   height: number;
+  width: number;
+  orientation: 'horizontal' | 'vertical' | 'upside-down';
   symbols: PositionedSymbol[];
 }
 
@@ -218,6 +225,22 @@ function extractWordsFromAnnotation(fullTextAnnotation: any): {
             })
             .filter((s: PositionedSymbol) => s.text.length > 0);
 
+          // Detect word orientation from Vision polygon vertices (v0 -> v1 top edge vector)
+          const v0x = Number(vertices[0]?.x || 0);
+          const v0y = Number(vertices[0]?.y || 0);
+          const v1x = Number(vertices[1]?.x || 0);
+          const v1y = Number(vertices[1]?.y || 0);
+          const topDx = v1x - v0x;
+          const topDy = v1y - v0y;
+          const boxWidth = Math.max(1, xMax - xMin);
+          const boxHeight = Math.max(8, yMax - yMin);
+          let orientation: 'horizontal' | 'vertical' | 'upside-down' = 'horizontal';
+          if (Math.abs(topDy) > Math.abs(topDx) * 1.15 || (text.length >= 4 && boxHeight > boxWidth * 1.45)) {
+            orientation = 'vertical';
+          } else if (topDx < -4) {
+            orientation = 'upside-down';
+          }
+
           words.push({
             text,
             xMin,
@@ -226,7 +249,9 @@ function extractWordsFromAnnotation(fullTextAnnotation: any): {
             yMin,
             yMax,
             yCenter: (yMin + yMax) / 2,
-            height: Math.max(8, yMax - yMin),
+            height: boxHeight,
+            width: boxWidth,
+            orientation,
             symbols
           });
         }
@@ -746,26 +771,74 @@ export function parseLeaRegisterFromAnnotation(
     ? yCorr(parentPhoneWord.xCenter, parentPhoneWord.yCenter) + rowHeight * 0.65
     : dayHeaderBaseY + rowHeight * 1.9;
 
-  // Extract Strike / Public Holiday vertical annotations across the grid
+  // Extract Strike / Public Holiday / Mid-Term Break vertical, sideways, or upside-down annotations
+  const holidayKeywordRegex =
+    /^(STRIKE|Strukce|N\.?U\.?T\.?|WORKERS|PUBLIC|HOLIDAY|HOLIDAYS|TAAY|Eid|Al|adha|fitr|SALLAH|SALA|MID-?TERM|BREAK|CLOSED|CLOSURE|ELECTION|DEMOCRACY|INDEPENDENCE|EASTER|CHRISTMAS|CHILDREN|Solidarity|NLC|NO-?SCHOOL)$/i;
+
   const holidayBannerWords = words.filter(
     (w) =>
-      yCorr(w.xCenter, w.yCenter) >= bodyTopY - rowHeight * 0.5 &&
-      /^(STRIKE|Strukce|N\.?U\.?T\.?|WORKERS|PUBLIC|HOLIDAY|TAAY|Eid|Al|adha|Solidarity|NLC)$/i.test(w.text)
+      yCorr(w.xCenter, w.yCenter) >= bodyTopY - rowHeight * 1.1 &&
+      (holidayKeywordRegex.test(w.text) ||
+        ((w.orientation === 'vertical' || w.orientation === 'upside-down') &&
+          /STRIKE|HOLIDAY|BREAK|SALLAH|EID|CLOSED|PUBLIC|MIDTERM|SCHOOL|ELECTION/i.test(w.text)))
   );
   const holidayWordSet = new Set<PositionedWord>(holidayBannerWords);
   const holidayColumnSet = new Set<string>();
+  const holidayAnnotationsByColumn = new Map<
+    string,
+    { texts: string[]; orientation: 'vertical' | 'upside-down' | 'horizontal' }
+  >();
   const detectedHolidayNotes: string[] = [];
 
   for (const hw of holidayBannerWords) {
     if (!detectedHolidayNotes.includes(hw.text)) detectedHolidayNotes.push(hw.text);
     for (const wk of weekColumns) {
       for (const dc of wk.days) {
-        if (hw.xMax >= dc.xCenter - dc.dayWidth * 0.52 && hw.xMin <= dc.xCenter + dc.dayWidth * 0.52) {
-          holidayColumnSet.add(`${wk.weekLabel}::${dc.day}`);
+        if (hw.xMax >= dc.xCenter - dc.dayWidth * 0.65 && hw.xMin <= dc.xCenter + dc.dayWidth * 0.65) {
+          const colKey = `${wk.weekLabel}::${dc.day}`;
+          holidayColumnSet.add(colKey);
+          const existing = holidayAnnotationsByColumn.get(colKey) || {
+            texts: [],
+            orientation: hw.orientation
+          };
+          if (!existing.texts.includes(hw.text)) {
+            existing.texts.push(hw.text);
+          }
+          if (hw.orientation === 'upside-down' || hw.orientation === 'vertical') {
+            existing.orientation = hw.orientation;
+          }
+          holidayAnnotationsByColumn.set(colKey, existing);
         }
       }
     }
   }
+
+  // Default Register Scan Behavior: target ONLY the rightmost (most recent) week block
+  // and ONLY the exact weekday column matching targetDate (ordinal M=0, T=1[Tue], W=2, T=3[Thu], F=4).
+  const targetWeekday = resolveSchoolWeekday(targetDate) as DayOfWeek;
+  const scopedWeekColumns = selectRightmostWeekAndTargetDay(weekColumns, targetWeekday);
+  const activeWeekLabel = scopedWeekColumns[0]?.weekLabel || weekColumns[weekColumns.length - 1]?.weekLabel || 'Week 1';
+  const targetColKey = `${activeWeekLabel}::${targetWeekday}`;
+  const matchedHolidayEntry = holidayAnnotationsByColumn.get(targetColKey);
+  const detectedHolidayAnnotation: DetectedHolidayAnnotation | null = matchedHolidayEntry
+    ? {
+        text: matchedHolidayEntry.texts.join(' '),
+        orientation: matchedHolidayEntry.orientation,
+        day: targetWeekday,
+        week: activeWeekLabel
+      }
+    : detectedHolidayNotes.length > 0 && scopedWeekColumns.length === 1 && holidayColumnSet.size >= weekColumns.length * 4
+    ? {
+        text: detectedHolidayNotes.join(' '),
+        orientation: holidayBannerWords.some((w) => w.orientation === 'upside-down')
+          ? 'upside-down'
+          : holidayBannerWords.some((w) => w.orientation === 'vertical')
+          ? 'vertical'
+          : 'horizontal',
+        day: targetWeekday,
+        week: activeWeekLabel
+      }
+    : null;
 
   // Build Row Bands (Left Page anchors on NAME/Serials using leftSlopeAtY; Right Page anchors on Grid/TOTAL marks)
   interface RowBand {
@@ -995,7 +1068,7 @@ export function parseLeaRegisterFromAnnotation(
   const rows: GeminiExtractionResult['rows'] = rowBands.map((rb) => {
     const marks: GeminiExtractionResult['rows'][number]['marks'] = [];
 
-    for (const wk of weekColumns) {
+    for (const wk of scopedWeekColumns) {
       for (const dc of wk.days) {
         const key = `${wk.weekLabel}::${dc.day}`;
         if (holidayColumnSet.has(key)) {
@@ -1096,13 +1169,17 @@ export function parseLeaRegisterFromAnnotation(
       admissionNumber: rb.admissionNumber
     }));
 
-  const detectedWeeks = weekColumns.map((w) => w.weekLabel);
+  const detectedWeeks = scopedWeekColumns.map((w) => w.weekLabel);
   const layoutNotesParts = [
-    `LEA Primary Register (${isLeftRosterPage ? 'Left Roster + Grid Page' : 'Right Multi-Week Grid Page'}) parsed via Google Cloud Vision bounding boxes.`,
-    `${rowBands.length} populated pupil row(s) aligned across ${weekColumns.length} week block(s).`
+    `LEA Primary Register (${isLeftRosterPage ? 'Left Roster + Grid Page' : 'Right Multi-Week Grid Page'}) — extracted ${targetWeekday} from rightmost week (${activeWeekLabel}).`,
+    `${rowBands.length} populated pupil row(s) aligned.`
   ];
-  if (detectedHolidayNotes.length > 0) {
-    layoutNotesParts.push(`Strike/Holiday notes detected: ${detectedHolidayNotes.join(', ')}.`);
+  if (detectedHolidayAnnotation) {
+    layoutNotesParts.push(
+      `Possible ${detectedHolidayAnnotation.orientation} non-school annotation detected on ${targetWeekday}: "${detectedHolidayAnnotation.text}".`
+    );
+  } else if (detectedHolidayNotes.length > 0) {
+    layoutNotesParts.push(`Strike/Holiday notes visible on sheet: ${detectedHolidayNotes.join(', ')}.`);
   }
   if (uncertainCount > 0) {
     layoutNotesParts.push(
@@ -1118,7 +1195,7 @@ export function parseLeaRegisterFromAnnotation(
     attendance: {
       schoolIdentified: null,
       classIdentified: classDetected || targetClassName || null,
-      periodIdentified: periodDetected || targetDate || detectedWeeks.join(', '),
+      periodIdentified: periodDetected || targetDate || `${activeWeekLabel} · ${targetWeekday}`,
       layoutNotes: layoutNotesParts.join(' '),
       layoutQuality: {
         pageBoundariesDetected: true,
@@ -1128,6 +1205,9 @@ export function parseLeaRegisterFromAnnotation(
         layoutTooDistorted: false,
         retakeOrCropAdvice: null
       },
+      targetWeekUsed: activeWeekLabel,
+      targetDayUsed: targetWeekday,
+      detectedHolidayAnnotation,
       gridGeometry: {
         pageWidth,
         pageHeight,
@@ -1140,7 +1220,7 @@ export function parseLeaRegisterFromAnnotation(
           rowNumber: rb.rowNumber,
           yCenterAtZeroX: rb.yc
         })),
-        weeks: weekColumns.map((wk) => ({
+        weeks: scopedWeekColumns.map((wk) => ({
           weekLabel: wk.weekLabel,
           days: wk.days.map((d) => ({
             day: d.day,
@@ -1150,7 +1230,7 @@ export function parseLeaRegisterFromAnnotation(
         }))
       },
       totalRowsDetected: rows.length,
-      detectedDays: FULL_WEEKDAYS,
+      detectedDays: [targetWeekday],
       rows,
       ambiguityDetected: uncertainCount > 0,
       summaryStatistics: {
@@ -1644,3 +1724,70 @@ export async function extractRosterWithGoogleCloudVision(
     rawText: ocrResult.reconstructedText || ocrResult.fullText || ''
   };
 }
+
+/**
+ * Selects strictly the rightmost (most recent) week block and the exact weekday column
+ * matching `targetWeekday` by ordinal M/T/W/T/F order (disambiguating Tuesday's 1st 'T'
+ * after 'M' from Thursday's 2nd 'T' after 'W').
+ */
+export function selectRightmostWeekAndTargetDay<
+  T extends {
+    weekLabel: string;
+    days: Array<{ day: DayOfWeek; xCenter: number; dayWidth: number }>;
+  }
+>(weekColumns: T[], targetWeekday: DayOfWeek): T[] {
+  if (!Array.isArray(weekColumns) || weekColumns.length === 0) return [];
+  // Sort left-to-right by first day column xCenter so the rightmost week is guaranteed last
+  const orderedWeeks = [...weekColumns].sort(
+    (a, b) => (a.days[0]?.xCenter ?? 0) - (b.days[0]?.xCenter ?? 0)
+  );
+  const rightmostWeek = orderedWeeks[orderedWeeks.length - 1];
+  const dayOrder: DayOfWeek[] = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+  const targetOrdinal = dayOrder.indexOf(targetWeekday);
+
+  // Order days left-to-right inside the rightmost week
+  const orderedDays = [...rightmostWeek.days].sort((a, b) => a.xCenter - b.xCenter);
+  const matchedByName = orderedDays.find((d) => d.day === targetWeekday);
+  const matchedByOrdinal =
+    targetOrdinal >= 0 && targetOrdinal < orderedDays.length
+      ? orderedDays[targetOrdinal]
+      : undefined;
+  const chosenDay = matchedByName || matchedByOrdinal || orderedDays[0];
+
+  if (!chosenDay) return [];
+  return [
+    {
+      ...rightmostWeek,
+      days: [chosenDay]
+    }
+  ];
+}
+
+/**
+ * Exposes raw Google Cloud Vision OCR text + reconstructed lines for the hybrid
+ * Summary Note scanner (Vision OCR + Gemini).
+ */
+export async function runRawVisionOcrForSummary(imageBuffer: Buffer): Promise<{
+  ok: boolean;
+  fullText?: string;
+  reconstructedText?: string;
+  error?: string;
+  code?: string;
+  billingUrl?: string;
+}> {
+  const res = await runVisionDocumentTextDetection(imageBuffer);
+  if (!res.ok) {
+    return {
+      ok: false,
+      code: res.code,
+      error: res.error,
+      billingUrl: res.billingUrl
+    };
+  }
+  return {
+    ok: true,
+    fullText: res.fullText || '',
+    reconstructedText: res.reconstructedText || res.fullText || ''
+  };
+}
+

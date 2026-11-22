@@ -1,17 +1,295 @@
 @import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
 
 @theme {
   --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, -apple-system, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
 }
 
+/* ============================================================================
+   5-Theme System: Classic LEA (default), Civic Paper, Daylight Sky, Warm Sage,
+   and Midnight Slate (full dark mode modeled after the classic dark chrome)
+   ============================================================================ */
+
+:root,
+[data-theme="classic"] {
+  --app-bg: #f1f5f9;
+  --app-surface: #ffffff;
+  --app-surface-muted: #f8fafc;
+  --app-border: #e2e8f0;
+  --app-text: #0f172a;
+  --app-text-muted: #475569;
+  --app-accent: #047857;
+  --app-accent-hover: #065f46;
+  --app-accent-soft: #ecfdf5;
+  --app-accent-text: #065f46;
+
+  --app-header-bg: #0f172a;
+  --app-header-border: #1e293b;
+  --app-header-text: #ffffff;
+  --app-header-subtext: #cbd5e1;
+  --app-header-accent: #34d399;
+
+  --app-sidebar-bg: #0f172a;
+  --app-sidebar-surface: #1e293b;
+  --app-sidebar-border: #1e293b;
+  --app-sidebar-text: #e2e8f0;
+  --app-sidebar-muted: #94a3b8;
+  --app-sidebar-active-bg: rgba(16, 185, 129, 0.16);
+  --app-sidebar-active-text: #34d399;
+
+  --app-nav-bg: #ffffff;
+  --app-nav-border: #e2e8f0;
+  --app-nav-text: #475569;
+  --app-nav-active: #047857;
+}
+
+/* Light Theme 1: Civic Paper (warm archival ivory & forest ink) */
+[data-theme="paper"] {
+  --app-bg: #f7f3eb;
+  --app-surface: #fffdf9;
+  --app-surface-muted: #f3eee4;
+  --app-border: #e4ddd0;
+  --app-text: #1c2420;
+  --app-text-muted: #57534e;
+  --app-accent: #047857;
+  --app-accent-hover: #065f46;
+  --app-accent-soft: #ecfdf5;
+  --app-accent-text: #065f46;
+
+  --app-header-bg: #fffdf9;
+  --app-header-border: #e4ddd0;
+  --app-header-text: #1c2420;
+  --app-header-subtext: #57534e;
+  --app-header-accent: #047857;
+
+  --app-sidebar-bg: #f3eee4;
+  --app-sidebar-surface: #eae3d5;
+  --app-sidebar-border: #dfd6c5;
+  --app-sidebar-text: #292524;
+  --app-sidebar-muted: #6b645a;
+  --app-sidebar-active-bg: #ffffff;
+  --app-sidebar-active-text: #047857;
+
+  --app-nav-bg: #fffdf9;
+  --app-nav-border: #e4ddd0;
+  --app-nav-text: #57534e;
+  --app-nav-active: #047857;
+
+  --color-slate-50: #faf7f2;
+  --color-slate-100: #f3eee4;
+  --color-slate-200: #e4ddd0;
+}
+
+/* Light Theme 2: Daylight Sky (bright cool alabaster-blue & cerulean) */
+[data-theme="sky"] {
+  --app-bg: #f1f6fc;
+  --app-surface: #ffffff;
+  --app-surface-muted: #edf4fc;
+  --app-border: #d7e4f3;
+  --app-text: #0f213a;
+  --app-text-muted: #47607e;
+  --app-accent: #0284c7;
+  --app-accent-hover: #0369a1;
+  --app-accent-soft: #e0f2fe;
+  --app-accent-text: #0369a1;
+
+  --app-header-bg: #ffffff;
+  --app-header-border: #d7e4f3;
+  --app-header-text: #0f213a;
+  --app-header-subtext: #47607e;
+  --app-header-accent: #0284c7;
+
+  --app-sidebar-bg: #e9f2fc;
+  --app-sidebar-surface: #ddeafb;
+  --app-sidebar-border: #cde0f5;
+  --app-sidebar-text: #142a4a;
+  --app-sidebar-muted: #526d8d;
+  --app-sidebar-active-bg: #ffffff;
+  --app-sidebar-active-text: #0284c7;
+
+  --app-nav-bg: #ffffff;
+  --app-nav-border: #d7e4f3;
+  --app-nav-text: #47607e;
+  --app-nav-active: #0284c7;
+
+  --color-slate-50: #f6faff;
+  --color-slate-100: #ecf4fc;
+  --color-slate-200: #d7e4f3;
+}
+
+/* Light Theme 3: Warm Sage (botanical classroom mist & pine teal) */
+[data-theme="sage"] {
+  --app-bg: #eff6f2;
+  --app-surface: #ffffff;
+  --app-surface-muted: #e8f2ec;
+  --app-border: #d2e4d9;
+  --app-text: #132a22;
+  --app-text-muted: #456258;
+  --app-accent: #0f766e;
+  --app-accent-hover: #115e59;
+  --app-accent-soft: #ccfbf1;
+  --app-accent-text: #115e59;
+
+  --app-header-bg: #ffffff;
+  --app-header-border: #d2e4d9;
+  --app-header-text: #132a22;
+  --app-header-subtext: #456258;
+  --app-header-accent: #0f766e;
+
+  --app-sidebar-bg: #e6f0ea;
+  --app-sidebar-surface: #d9e8df;
+  --app-sidebar-border: #c7dcd0;
+  --app-sidebar-text: #163329;
+  --app-sidebar-muted: #4f6f64;
+  --app-sidebar-active-bg: #ffffff;
+  --app-sidebar-active-text: #0f766e;
+
+  --app-nav-bg: #ffffff;
+  --app-nav-border: #d2e4d9;
+  --app-nav-text: #456258;
+  --app-nav-active: #0f766e;
+
+  --color-slate-50: #f4faf6;
+  --color-slate-100: #e8f2ec;
+  --color-slate-200: #d2e4d9;
+}
+
+/* Dark Theme: Midnight Slate (full dark mode modeled after classic slate-900/emerald aesthetic) */
+[data-theme="midnight"] {
+  color-scheme: dark;
+
+  --app-bg: #090f1d;
+  --app-surface: #0f172a;
+  --app-surface-muted: #162036;
+  --app-border: #1e293b;
+  --app-text: #f1f5f9;
+  --app-text-muted: #94a3b8;
+  --app-accent: #10b981;
+  --app-accent-hover: #059669;
+  --app-accent-soft: rgba(16, 185, 129, 0.14);
+  --app-accent-text: #34d399;
+
+  --app-header-bg: #0b1222;
+  --app-header-border: #1e293b;
+  --app-header-text: #f8fafc;
+  --app-header-subtext: #94a3b8;
+  --app-header-accent: #34d399;
+
+  --app-sidebar-bg: #0b1222;
+  --app-sidebar-surface: #151f33;
+  --app-sidebar-border: #1e293b;
+  --app-sidebar-text: #e2e8f0;
+  --app-sidebar-muted: #94a3b8;
+  --app-sidebar-active-bg: rgba(16, 185, 129, 0.18);
+  --app-sidebar-active-text: #34d399;
+
+  --app-nav-bg: #0f172a;
+  --app-nav-border: #1e293b;
+  --app-nav-text: #94a3b8;
+  --app-nav-active: #34d399;
+}
+
 @layer base {
   body {
     font-family: var(--font-sans);
+    background-color: var(--app-bg);
+    color: var(--app-text);
   }
+}
+
+/* Midnight Slate dark surface & input adaptation for brownfield light cards without touching primary CTA white text */
+[data-theme="midnight"] main .bg-white {
+  background-color: #0f172a;
+}
+[data-theme="midnight"] main .bg-slate-50,
+[data-theme="midnight"] main .bg-slate-50\/70,
+[data-theme="midnight"] main .bg-slate-50\/80 {
+  background-color: #162036;
+}
+[data-theme="midnight"] main .bg-slate-100,
+[data-theme="midnight"] main .bg-slate-100\/90 {
+  background-color: #1e293b;
+}
+[data-theme="midnight"] main .border-slate-200,
+[data-theme="midnight"] main .border-slate-100,
+[data-theme="midnight"] main .border-slate-300 {
+  border-color: #253349;
+}
+[data-theme="midnight"] main .divide-slate-100 > :not(:last-child),
+[data-theme="midnight"] main .divide-slate-200 > :not(:last-child) {
+  border-color: #1e293b;
+}
+[data-theme="midnight"] main .text-slate-900,
+[data-theme="midnight"] main .text-slate-800 {
+  color: #f1f5f9;
+}
+[data-theme="midnight"] main .text-slate-700 {
+  color: #cbd5e1;
+}
+[data-theme="midnight"] main .text-slate-600,
+[data-theme="midnight"] main .text-slate-500 {
+  color: #94a3b8;
+}
+[data-theme="midnight"] main input:not([type="checkbox"]):not([type="radio"]),
+[data-theme="midnight"] main select,
+[data-theme="midnight"] main textarea {
+  background-color: #162036;
+  border-color: #334155;
+  color: #f8fafc;
+}
+[data-theme="midnight"] main .bg-emerald-50,
+[data-theme="midnight"] main .bg-emerald-50\/60,
+[data-theme="midnight"] main .bg-emerald-50\/70 {
+  background-color: rgba(16, 185, 129, 0.12);
+}
+[data-theme="midnight"] main .border-emerald-200 {
+  border-color: rgba(16, 185, 129, 0.3);
+}
+[data-theme="midnight"] main .text-emerald-900,
+[data-theme="midnight"] main .text-emerald-800 {
+  color: #6ee7b7;
+}
+[data-theme="midnight"] main .bg-amber-50,
+[data-theme="midnight"] main .bg-amber-50\/70 {
+  background-color: rgba(245, 158, 11, 0.12);
+}
+[data-theme="midnight"] main .border-amber-200 {
+  border-color: rgba(245, 158, 11, 0.3);
+}
+[data-theme="midnight"] main .text-amber-900,
+[data-theme="midnight"] main .text-amber-800 {
+  color: #fcd34d;
+}
+[data-theme="midnight"] main .bg-rose-50,
+[data-theme="midnight"] main .bg-rose-50\/70 {
+  background-color: rgba(244, 63, 94, 0.12);
+}
+[data-theme="midnight"] main .border-rose-200 {
+  border-color: rgba(244, 63, 94, 0.3);
+}
+[data-theme="midnight"] main .text-rose-900,
+[data-theme="midnight"] main .text-rose-800 {
+  color: #fda4af;
+}
+[data-theme="midnight"] main .bg-sky-50,
+[data-theme="midnight"] main .bg-indigo-50,
+[data-theme="midnight"] main .bg-blue-50 {
+  background-color: rgba(56, 189, 248, 0.12);
+}
+[data-theme="midnight"] main .border-sky-200,
+[data-theme="midnight"] main .border-indigo-200,
+[data-theme="midnight"] main .border-blue-200 {
+  border-color: rgba(56, 189, 248, 0.3);
+}
+[data-theme="midnight"] main .text-sky-900,
+[data-theme="midnight"] main .text-indigo-900,
+[data-theme="midnight"] main .text-blue-900,
+[data-theme="midnight"] main .text-sky-800,
+[data-theme="midnight"] main .text-indigo-800 {
+  color: #7dd3fc;
 }
 
 .tabular-nums {
   font-variant-numeric: tabular-nums;
 }
-

@@ -22,9 +22,16 @@ import {
   ChevronRight,
   Wand2,
   RotateCcw,
-  Eye
+  Eye,
+  Star
 } from 'lucide-react';
-import { ClassItem, NormalizedCropBox, Student } from '../types/attendance';
+import {
+  AttendanceSession,
+  ClassItem,
+  NonSchoolGapRecord,
+  NormalizedCropBox,
+  Student
+} from '../types/attendance';
 import {
   MIN_RECOMMENDED_SHORT_SIDE_PX,
   preprocessRegisterImage,
@@ -32,6 +39,9 @@ import {
 } from '../services/imagePreprocessing';
 import { RegisterImageCropperModal } from '../components/RegisterImageCropperModal';
 import { LiveCameraViewfinderModal } from '../components/LiveCameraViewfinderModal';
+import { StarredPupilsCard } from '../components/StarredPupilsCard';
+import { computeStarredStudentSummaries } from '../services/studentTrackingMetrics';
+import { getDefaultSchoolDate } from '../services/schoolCalendarGaps';
 
 interface ExtractedRosterDraftRow {
   localId: string;
@@ -49,6 +59,10 @@ type EditableExtractedField = 'studentNumber' | 'fullName' | 'admissionNumber';
 interface StudentsPageProps {
   students: Student[];
   classes: ClassItem[];
+  sessions?: AttendanceSession[];
+  nonSchoolGaps?: NonSchoolGapRecord[];
+  starredStudentIds?: string[];
+  onToggleStarStudent?: (studentId: string) => void;
   onAddStudent: (student: Omit<Student, 'id' | 'createdAt' | 'updatedAt'>) => void | Promise<void>;
   onBulkAddStudents?: (
     students: Array<Omit<Student, 'id' | 'createdAt' | 'updatedAt'>>
@@ -58,6 +72,10 @@ interface StudentsPageProps {
   onAddClass: (classData: { name: string; classTeacher?: string; notes?: string }) => Promise<ClassItem | void> | void;
   onEditClass: (updatedClass: ClassItem) => void | Promise<void>;
   onDeleteClass: (classId: string) => void | Promise<void>;
+  onDeleteAllPupils?: (options?: { alsoDeleteClasses?: boolean }) =>
+    | void
+    | { studentsDeleted: boolean; sessionsCleared: boolean; classesDeleted: boolean }
+    | Promise<void | { studentsDeleted: boolean; sessionsCleared: boolean; classesDeleted: boolean }>;
   canWrite?: boolean;
   autoOpenBulkScanSignal?: number;
   highlightedTarget?: string | null;
@@ -66,6 +84,10 @@ interface StudentsPageProps {
 export const StudentsPage: React.FC<StudentsPageProps> = ({
   students,
   classes,
+  sessions = [],
+  nonSchoolGaps = [],
+  starredStudentIds = [],
+  onToggleStarStudent,
   onAddStudent,
   onBulkAddStudents,
   onEditStudent,
@@ -73,6 +95,7 @@ export const StudentsPage: React.FC<StudentsPageProps> = ({
   onAddClass,
   onEditClass,
   onDeleteClass,
+  onDeleteAllPupils,
   canWrite = true,
   autoOpenBulkScanSignal = 0,
   highlightedTarget
@@ -93,6 +116,12 @@ export const StudentsPage: React.FC<StudentsPageProps> = ({
   const [showAddClassModal, setShowAddClassModal] = useState(false);
   const [editingClass, setEditingClass] = useState<ClassItem | null>(null);
   const [deletingClass, setDeletingClass] = useState<ClassItem | null>(null);
+
+  // Delete All Pupils Reset Modal
+  const [showDeleteAllPupilsModal, setShowDeleteAllPupilsModal] = useState(false);
+  const [alsoDeleteClassesOnReset, setAlsoDeleteClassesOnReset] = useState(false);
+  const [isDeletingAllPupils, setIsDeletingAllPupils] = useState(false);
+  const [deleteAllPupilsError, setDeleteAllPupilsError] = useState<string | null>(null);
 
   // Bulk Scan Roster Modal
   const [showBulkScanModal, setShowBulkScanModal] = useState(false);
@@ -201,6 +230,21 @@ export const StudentsPage: React.FC<StudentsPageProps> = ({
       return matchesSearch && matchesClass && matchesStatus;
     });
   }, [students, searchQuery, selectedClassFilter, selectedStatusFilter]);
+
+  const starredSet = useMemo(() => new Set(starredStudentIds), [starredStudentIds]);
+  const starredSummaries = useMemo(
+    () =>
+      computeStarredStudentSummaries({
+        students,
+        classes,
+        sessions,
+        starredIds: starredStudentIds,
+        targetDate: getDefaultSchoolDate(),
+        nonSchoolGaps,
+        filterClassId: selectedClassFilter === 'All' ? undefined : selectedClassFilter
+      }),
+    [students, classes, sessions, starredStudentIds, nonSchoolGaps, selectedClassFilter]
+  );
 
   // Open Add Student Modal
   const handleOpenAddStudent = () => {
@@ -948,6 +992,22 @@ export const StudentsPage: React.FC<StudentsPageProps> = ({
               <Plus className="w-3.5 h-3.5 text-slate-600" />
               <span>+ Single Student</span>
             </button>
+
+            {onDeleteAllPupils && (students.length > 0 || sessions.length > 0) && (
+              <button
+                type="button"
+                onClick={() => {
+                  setAlsoDeleteClassesOnReset(false);
+                  setDeleteAllPupilsError(null);
+                  setShowDeleteAllPupilsModal(true);
+                }}
+                className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-lg border border-rose-300 bg-rose-50 hover:bg-rose-100 text-rose-800 font-semibold text-xs shadow-xs transition-colors cursor-pointer"
+                title="Delete all pupil records in database to start fresh"
+              >
+                <Trash2 className="w-3.5 h-3.5 text-rose-700" />
+                <span>Delete All Pupils</span>
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -993,6 +1053,15 @@ export const StudentsPage: React.FC<StudentsPageProps> = ({
       {/* TAB 1: STUDENTS ROSTER */}
       {activeSubTab === 'students' && (
         <div className="space-y-4">
+          {starredSummaries.length > 0 && (
+            <StarredPupilsCard
+              summaries={starredSummaries}
+              title="Starred Pupils"
+              subtitle="Daily status & attendance counts from direct register scans (tap star icon below to track or unstar)"
+              onUnstar={onToggleStarStudent}
+            />
+          )}
+
           {/* Search & Filters Card */}
           <div className="bg-white rounded-lg border border-slate-200 p-4 shadow-xs space-y-3">
             <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-center">
@@ -1114,6 +1183,11 @@ export const StudentsPage: React.FC<StudentsPageProps> = ({
                 <table className="w-full text-left text-xs sm:text-sm">
                   <thead className="bg-slate-50 border-b border-slate-200 text-slate-600 font-semibold uppercase tracking-wider text-[11px]">
                     <tr>
+                      {onToggleStarStudent && (
+                        <th scope="col" className="py-3 px-3 text-center w-12" aria-label="Track">
+                          ★
+                        </th>
+                      )}
                       <th scope="col" className="py-3 px-4 text-center w-16">
                         S/N
                       </th>
@@ -1139,6 +1213,7 @@ export const StudentsPage: React.FC<StudentsPageProps> = ({
                   <tbody className="divide-y divide-slate-100 text-slate-700">
                     {filteredStudents.map((student) => {
                       const className = classMap.get(student.classId) || 'Unassigned';
+                      const isStarred = starredSet.has(student.id);
 
                       return (
                         <tr
@@ -1147,6 +1222,23 @@ export const StudentsPage: React.FC<StudentsPageProps> = ({
                             !student.active ? 'bg-slate-50/40 text-slate-400' : ''
                           }`}
                         >
+                          {onToggleStarStudent && (
+                            <td className="py-2 px-2 text-center whitespace-nowrap">
+                              <button
+                                type="button"
+                                onClick={() => onToggleStarStudent(student.id)}
+                                className={`min-h-[40px] min-w-[40px] inline-flex items-center justify-center rounded-lg transition-colors cursor-pointer ${
+                                  isStarred
+                                    ? 'text-amber-500 hover:bg-amber-50'
+                                    : 'text-slate-300 hover:text-amber-500 hover:bg-slate-100'
+                                }`}
+                                title={isStarred ? `Unstar ${student.fullName}` : `Star & track ${student.fullName}`}
+                                aria-label={isStarred ? `Unstar ${student.fullName}` : `Star ${student.fullName}`}
+                              >
+                                <Star className={`w-4 h-4 ${isStarred ? 'fill-amber-400' : ''}`} />
+                              </button>
+                            </td>
+                          )}
                           <td className="py-3 px-4 text-center font-bold text-slate-500 whitespace-nowrap">
                             {student.studentNumber}
                           </td>
@@ -2918,6 +3010,131 @@ export const StudentsPage: React.FC<StudentsPageProps> = ({
         onFallbackToNativeCamera={() => bulkCameraInputRef.current?.click()}
         onClose={() => setBulkIsLiveCameraOpen(false)}
       />
+
+      {/* DELETE ALL PUPILS CONFIRMATION MODAL */}
+      {showDeleteAllPupilsModal && onDeleteAllPupils && (
+        <div
+          className="fixed inset-0 z-[80] bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="bg-white border border-slate-200 rounded-2xl max-w-md w-full shadow-2xl overflow-hidden">
+            <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-lg bg-rose-100 text-rose-700 flex items-center justify-center shrink-0">
+                  <AlertTriangle className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900">
+                    Delete All Pupil Records?
+                  </h3>
+                  <p className="text-[11px] text-slate-500">
+                    Permanently resets the student roster in the database
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                disabled={isDeletingAllPupils}
+                onClick={() => setShowDeleteAllPupilsModal(false)}
+                className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg cursor-pointer"
+                aria-label="Close"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4 text-xs">
+              <p className="text-slate-700 leading-relaxed">
+                This will permanently delete all <strong>{students.length}</strong> enrolled pupil{' '}
+                {students.length === 1 ? 'record' : 'records'} from the database
+                {sessions.length > 0
+                  ? ` along with ${sessions.length} linked attendance ${
+                      sessions.length === 1 ? 'session' : 'sessions'
+                    }`
+                  : ''}
+                , so you can enroll every class cleanly from the beginning.
+              </p>
+
+              <label className="flex items-start gap-2.5 p-3 rounded-xl border border-slate-200 bg-slate-50 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={alsoDeleteClassesOnReset}
+                  onChange={(e) => setAlsoDeleteClassesOnReset(e.target.checked)}
+                  disabled={isDeletingAllPupils}
+                  className="mt-0.5 w-4 h-4 rounded text-rose-700 focus:ring-rose-500"
+                />
+                <span className="text-slate-700 leading-snug">
+                  <strong className="text-slate-900">Also delete all classes ({classes.length})</strong>
+                  <span className="block text-[11px] text-slate-500 mt-0.5">
+                    Leave unchecked to keep your class names ready for fresh pupil enrollment.
+                  </span>
+                </span>
+              </label>
+
+              {deleteAllPupilsError && (
+                <div className="p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span>{deleteAllPupilsError}</span>
+                </div>
+              )}
+
+              <div className="flex flex-col-reverse sm:flex-row justify-end gap-2 pt-1">
+                <button
+                  type="button"
+                  disabled={isDeletingAllPupils}
+                  onClick={() => setShowDeleteAllPupilsModal(false)}
+                  className="min-h-[42px] px-4 py-2 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-semibold cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={isDeletingAllPupils}
+                  onClick={async () => {
+                    setIsDeletingAllPupils(true);
+                    setDeleteAllPupilsError(null);
+                    try {
+                      const res = await onDeleteAllPupils({ alsoDeleteClasses: alsoDeleteClassesOnReset });
+                      setShowDeleteAllPupilsModal(false);
+                      if (res && !res.sessionsCleared) {
+                        showToast(
+                          'All pupil records deleted! (To also clear old session logs, run migration 003 in Supabase SQL Editor.)'
+                        );
+                      } else {
+                        showToast(
+                          alsoDeleteClassesOnReset
+                            ? 'All pupil records, attendance records, and classes have been deleted.'
+                            : 'All pupil records have been deleted from the database. Ready to enroll from scratch.'
+                        );
+                      }
+                    } catch (err: any) {
+                      setDeleteAllPupilsError(
+                        err?.message || 'Failed to delete pupil records from database.'
+                      );
+                    } finally {
+                      setIsDeletingAllPupils(false);
+                    }
+                  }}
+                  className="min-h-[42px] px-4 py-2 rounded-xl bg-rose-700 hover:bg-rose-800 disabled:opacity-60 text-white font-bold inline-flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  {isDeletingAllPupils ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Deleting...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 className="w-4 h-4" />
+                      <span>Yes, Delete All Pupils</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

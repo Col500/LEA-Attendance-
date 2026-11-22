@@ -10,6 +10,10 @@ import {
   getGeminiApiKey,
   type RosterStudentCandidate
 } from './rosterNameCorrectionService.js';
+import {
+  analyzeHandwrittenSummaryNote,
+  type SummaryClassRef
+} from './summaryNoteService.js';
 
 dotenv.config();
 
@@ -224,6 +228,61 @@ export function createApiApp(): express.Express {
         ok: false,
         code: 'GCP_VISION_ERROR',
         error: err?.message || 'An error occurred while communicating with Google Cloud Vision.'
+      });
+    }
+  });
+
+  // POST /api/analyze-summary-note: Analyze handwritten notebook attendance summary via combined Vision OCR + Gemini
+  app.post('/api/analyze-summary-note', async (req, res) => {
+    try {
+      const { image, classes, selectedClassName, date } = req.body || {};
+      const parsedImage = validateImageDataPayload(image);
+      if (parsedImage.ok === false) {
+        return res.status(400).json({
+          ok: false,
+          code: parsedImage.code,
+          error: parsedImage.error
+        });
+      }
+
+      const safeClasses: SummaryClassRef[] = Array.isArray(classes)
+        ? classes
+            .filter((c: any) => c && typeof c.id === 'string' && typeof c.name === 'string')
+            .map((c: any) => ({
+              id: c.id,
+              name: c.name,
+              enrolledCount: typeof c.enrolledCount === 'number' ? c.enrolledCount : undefined
+            }))
+        : [];
+
+      const result = await analyzeHandwrittenSummaryNote({
+        imageBuffer: Buffer.from(parsedImage.base64Data, 'base64'),
+        mimeType: parsedImage.mimeType,
+        base64Data: parsedImage.base64Data,
+        classes: safeClasses,
+        selectedClassName: typeof selectedClassName === 'string' ? selectedClassName : undefined,
+        targetDate: typeof date === 'string' ? date : undefined
+      });
+
+      if (result.ok === false) {
+        return res.status(result.httpStatus).json({
+          ok: false,
+          code: result.code,
+          error: result.error
+        });
+      }
+
+      return res.json({
+        ok: true,
+        data: result.data,
+        timestamp: new Date().toISOString()
+      });
+    } catch (err: any) {
+      console.error('Summary note analysis error:', err?.message || 'unknown error');
+      return res.status(500).json({
+        ok: false,
+        code: 'SUMMARY_NOTE_ERROR',
+        error: err?.message || 'Failed to analyze handwritten summary note.'
       });
     }
   });
