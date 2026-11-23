@@ -259,19 +259,55 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
     }
   };
 
+  const formatGreetingNameWithTitle = (rawName: string): string => {
+    const cleaned = rawName.replace(/\s+/g, ' ').trim();
+    if (!cleaned) return '';
+    const titleMatch = cleaned.match(/^(mrs|mr|ms|miss|dr|mallam|alhaji|hajia)\.?\s+(.+)$/i);
+    if (titleMatch) {
+      const rawTitle = titleMatch[1].toLowerCase();
+      const normalizedTitle =
+        rawTitle === 'mrs'
+          ? 'Mrs.'
+          : rawTitle === 'mr'
+          ? 'Mr.'
+          : rawTitle === 'ms'
+          ? 'Ms.'
+          : rawTitle === 'dr'
+          ? 'Dr.'
+          : titleMatch[1].charAt(0).toUpperCase() + titleMatch[1].slice(1).toLowerCase();
+      const firstName = titleMatch[2].trim().split(' ')[0];
+      return firstName ? `${normalizedTitle} ${firstName}` : normalizedTitle;
+    }
+    return cleaned;
+  };
+
+  const currentHour = new Date().getHours();
+  const timeGreeting =
+    currentHour < 12 ? 'Good morning,' : currentHour < 17 ? 'Good afternoon,' : 'Good evening,';
+
   const greetingPrefix =
     userRole === 'headteacher' || userRole === 'visitor' || userRole === 'viewer'
       ? 'Welcome,'
-      : 'Good morning,';
+      : timeGreeting;
+
+  const customHeadTeacherName =
+    activeSchool.headTeacher &&
+    activeSchool.headTeacher.trim().toLowerCase() !== 'head teacher'
+      ? formatGreetingNameWithTitle(activeSchool.headTeacher)
+      : '';
+
+  const customAdminName =
+    activeSchool.administratorName &&
+    activeSchool.administratorName.trim().toLowerCase() !== 'school administrator'
+      ? formatGreetingNameWithTitle(activeSchool.administratorName)
+      : '';
+
   const greetingSubject =
     userRole === 'headteacher'
-      ? 'Head Teacher (Read-Only Metrics)'
+      ? customHeadTeacherName || 'Head Teacher'
       : userRole === 'visitor' || userRole === 'viewer'
-      ? 'School Visitor / Inspector (Read-Only)'
-      : activeSchool.administratorName &&
-        activeSchool.administratorName.trim().toLowerCase() !== 'school administrator'
-      ? activeSchool.administratorName
-      : 'School Administrator';
+      ? 'School Inspector'
+      : customAdminName || 'School Administrator';
 
   return (
     <div className="w-full min-w-0 space-y-5 sm:space-y-6 max-w-7xl mx-auto">

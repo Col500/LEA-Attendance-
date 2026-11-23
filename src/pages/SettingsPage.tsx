@@ -738,7 +738,12 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
               </div>
               {parsedAdmin.title && parsedAdmin.baseName.trim() && (
                 <p className="text-[11px] text-slate-500 mt-1">
-                  Displays as:{' '}
+                  Dashboard greeting:{' '}
+                  <strong className="text-slate-800">
+                    {parsedAdmin.title} {parsedAdmin.baseName.trim().split(/\s+/)[0]}
+                  </strong>
+                  {' · '}
+                  Records:{' '}
                   <strong className="text-slate-800">
                     {combineAdministratorName(parsedAdmin.title, parsedAdmin.baseName)}
                   </strong>
@@ -1398,21 +1403,20 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
         </div>
 
         <div className="flex flex-col sm:flex-row sm:items-center gap-5">
-          {/* Reserved portrait space for developer picture */}
+          {/* Developer portrait */}
           <div
             data-developer-photo-slot="true"
-            aria-label="Developer photograph placeholder"
-            className="w-28 h-32 rounded-xl border-2 border-dashed border-slate-300 bg-slate-50 flex flex-col items-center justify-center text-center p-2 shrink-0"
+            className="w-28 h-36 sm:w-32 sm:h-40 rounded-xl overflow-hidden border border-slate-200 bg-white shadow-xs shrink-0 self-center sm:self-auto"
           >
-            <div className="w-11 h-11 rounded-full bg-slate-200/80 text-slate-500 flex items-center justify-center mb-1.5">
-              <User className="w-6 h-6" />
-            </div>
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 leading-tight">
-              Developer Photo
-            </span>
+            <img
+              src="/assets/aistudio/file_00000000aa2081f4b9e0cb2c2d52e45c_0bfe2c0d.png"
+              alt="Onigbinde Collins Oluwasegun"
+              className="w-full h-full object-cover object-top"
+              loading="lazy"
+            />
           </div>
 
-          <div className="space-y-2.5 min-w-0 flex-1">
+          <div className="space-y-2.5 min-w-0 flex-1 text-center sm:text-left">
             <div>
               <div className="text-[11px] font-semibold uppercase tracking-wider text-emerald-800">
                 Developed By
@@ -1425,22 +1429,16 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
               </p>
             </div>
 
-            <div className="flex flex-wrap items-center gap-x-5 gap-y-2 pt-1 text-xs">
-              <a
-                href="tel:+2349150635213"
-                className="inline-flex items-center gap-1.5 font-medium text-slate-700 hover:text-emerald-700 tabular-nums"
-              >
+            <div className="flex flex-wrap items-center justify-center sm:justify-start gap-x-5 gap-y-2 pt-1 text-xs">
+              <span className="inline-flex items-center gap-1.5 font-medium text-slate-700 tabular-nums select-text">
                 <Phone className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
                 <span>+234 9150635213</span>
-              </a>
+              </span>
 
-              <a
-                href="mailto:teamcolynn@gmail.com"
-                className="inline-flex items-center gap-1.5 font-medium text-slate-700 hover:text-emerald-700"
-              >
+              <span className="inline-flex items-center gap-1.5 font-medium text-slate-700 select-text">
                 <Mail className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
                 <span>teamcolynn@gmail.com</span>
-              </a>
+              </span>
             </div>
           </div>
         </div>
